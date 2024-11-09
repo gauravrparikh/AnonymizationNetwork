@@ -1,0 +1,83 @@
+Anonymization Service
+
+
+Main functionality
+- We need a directory server that contains all available Tor Nodes. 
+We need to build entry node(Guard Node), middle node and exit node.
+
+Establish encrypted connections between the Guard, Middle, and Exit nodes.
+
+
+Client -> Guard Node(Entry Node) -> Middle Node -> Exit Node -> Destination Server : each -> get encrypted with different keys.
+
+Node Class
+  - Guard Node
+  - Middle Node
+  - Exit Node
+
+
+Server Class 
+  - Client Server
+  - Destination Server 
+
+Directory Server Class
+
+Simulation Class
+  - Main method
+
+TLS Library for Python
+  - socket 
+
+
+  Certificate stuff? All nodes are trustable and we have no certuficate stuff. Between Nodes
+
+Start with HTTP and then move to HTTPS.
+
+
+
+
+Sample 
+
+import socket 
+import threading
+import time 
+import sys
+import os
+
+class Node:
+  def __init__(self, ip, port):
+    self.ip = ip
+    self.port = port
+    self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    self.socket.bind((self.ip, self.port))
+    self.socket.listen(5)
+    self.connections = []
+    self.data = ""
+    self.client = None
+    self.server = None
+
+  def accept_connections(self):
+    while True:
+      conn, addr = self.socket.accept()
+      self.connections.append(conn)
+      print(f"Connection established with {addr}")
+      self.data = conn.recv(1024).decode()
+      print(f"Data received: {self.data}")
+      if self.data == "exit":
+        conn.close()
+        break
+      if self.client is None:
+        self.client = conn
+      else:
+        self.server = conn
+      if self.client is not None and self.server is not None:
+        self.client.send(self.data.encode())
+        self.server.send(self.data.encode())
+        self.client.close()
+        self.server.close()
+        self.client = None
+        self.server = None
+
+  def start(self):
+    accept_thread = threading.Thread(target=self.accept_connections)
+    accept_thread.start()
