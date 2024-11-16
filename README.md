@@ -1,6 +1,6 @@
 # Tor
 
-
+This is the repository for the CS512 Distributed Systems Final Project. 
 
 ## Getting started
 

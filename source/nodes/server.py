@@ -7,7 +7,7 @@ import queue
 import fire
 
 
-class TCPProxyServer:
+class TorServer:
     def __init__(
         self, cdn_addr: str, cdn_port: int, origin_addr: str, origin_port: int
     ):
