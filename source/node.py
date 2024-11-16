@@ -54,16 +54,24 @@ Amazon:
 '''
 
 
-
 class Node:
-    def __init__(self, left_port, right_port=None, addr="127.0.0.1"):
+    def __init__(self, left_port,  right_port, ds_port, addr="127.0.0.1", ds_addr = "127.0.0.1"):
         self.left_port = left_port
         self.right_port = right_port
         self.addr = addr
-        print("Node initialized.")
+        self.ds_addr = ds_addr
+        self.ds_port = ds_port
+        #print("Node initialized.")
 
-    def start(self):
-        """Start the node server to listen for connections on the left port."""
+    def broadcast_to_directory(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as directory_socket:
+            symmetric_key = self.generate_key()
+            print((self.ds_addr, self.ds_port))
+            directory_socket.connect((self.ds_addr, self.ds_port))
+            directory_socket.sendall(pickle.dumps((self.left_port, self.addr, symmetric_key)))
+            
+    
+    def listen_for_clients(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listen_socket:
             listen_socket.bind((self.addr, self.left_port))
             listen_socket.listen()
@@ -75,7 +83,12 @@ class Node:
                     target=self.handle_left, args=(left_socket, address)
                 )
                 left_thread.start()
-                print(f"Started thread {left_thread.name} for client {address}")
+                #print(f"Started thread {left_thread.name} for client {address}")
+    def start(self):
+        """Start the node server to listen for connections on the left port."""
+        #threading.Thread(self.broadcast_to_directory).start()
+        self.broadcast_to_directory()
+        threading.Thread(target=self.listen_for_clients).start()
 
     def handle_left(self, left_socket, address):
         """Handle incoming connections and print received messages."""
@@ -85,7 +98,7 @@ class Node:
                 if not data:
                     print(f"Connection with {address} closed.")
                     break
-                print(f"Received from {address}: {pickle.loads(data)}")
+                #print(f"Received from {address}: {pickle.loads(data)}")
         except socket.error as e:
             print(f"Socket error with {address}: {e}")
         finally:
@@ -97,7 +110,7 @@ class Node:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as right_socket:
                 right_socket.connect((next_addr, next_port))
                 right_socket.sendall(message)
-                print(f"Sent message to {next_addr}:{next_port}")
+                #print(f"Sent message to {next_addr}:{next_port}")
         except socket.error as e:
             print(f"Error connecting to {next_addr}:{next_port} - {e}")
 
