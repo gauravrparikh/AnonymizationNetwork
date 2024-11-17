@@ -3,6 +3,7 @@ import socket
 import threading
 from directory_server import DirectoryServer
 from client import Client
+from destination import Destination
 import globals
 
 global listen_count 
@@ -20,11 +21,11 @@ def main():
         port += 2
     for node in nodes:
         node.start()
-    print("All nodes started")
-    directory_server.check_nodes()
-
+    deestination = Destination(globals.DESTINATION_PORT)
     # Create client
-    client = Client()
+    client = Client("Hello")
+    #a client is not a client a client is a client request 
+    #client.start_request("Hello")
 
 
 if __name__ == "__main__":

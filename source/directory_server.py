@@ -18,17 +18,13 @@ class DirectoryServer:
         self.node_keys = {} # Store the public keys of the nodes.
         self.start()
     
-    def check_nodes(self):
-        print(self.nodes)
-        print(self.node_keys.items())
-    
-    
+  
     def add_node(self, node_socket):
         """Handle incoming connections and print received messages."""
         # We assume that this will be enough to receive all the data.
         data = node_socket.recv(4096)
 
-        print("Data", pickle.loads(data))
+        #print("Data", pickle.loads(data))
         node_addr, node_port, public_key = pickle.loads(data)
         self.nodes.append((node_addr, node_port))
         self.node_keys[(node_addr, node_port)] = public_key
@@ -43,7 +39,7 @@ class DirectoryServer:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listen_socket:
             listen_socket.bind((self.ds_addr, self.node_port))
             listen_socket.listen(globals.NUM_NODES)
-            print(f"Directory Server listening for nodes on port {self.node_port}")
+            #print(f"Directory Server listening for nodes on port {self.node_port}")
             while True:
                 node_socket, address = listen_socket.accept()
                 # Create a new thread for each client connection
@@ -51,7 +47,7 @@ class DirectoryServer:
                     target=self.add_node, args=((node_socket,))
                 )
                 node_thread.start()
-                print(f"Started thread {node_thread.name} for node {address}")
+                #print(f"Started thread {node_thread.name} for node {address}")
     
 
     def listen_for_clients(self,):
@@ -60,7 +56,7 @@ class DirectoryServer:
 
             # Logically not accurate
             listen_socket.listen(globals.NUM_NODES)
-            print(f"Directory Server listening for clients on port {self.client_port}")
+            #print(f"Directory Server listening for clients on port {self.client_port}")
             while True:
                 client_socket, address = listen_socket.accept()
                 # Create a new thread for each client connection
@@ -68,13 +64,13 @@ class DirectoryServer:
                     target=self.handle_connection, args=((client_socket,))
                 )
                 client_thread.start()
-                print(f"Started thread {client_thread.name} for client {address}")
+                #print(f"Started thread {client_thread.name} for client {address}")
     
 
     def handle_connection(self, client_socket):
         circuit = random.sample(list(self.node_keys.items()), globals.NUM_NODES_IN_CIRCUIT)
         client_socket.sendall(pickle.dumps(circuit))
-        print("Sent")
+        #print("Sent")
 
 
     def start(self,):

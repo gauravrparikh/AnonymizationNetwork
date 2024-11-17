@@ -62,21 +62,21 @@ class Node:
         self.addr = addr
         self.ds_addr = ds_addr
         self.ds_port = ds_port
-        #print("Node initialized.")
+
+        ##Refresh key every so often? 
+        self.symmetric_key = self.generate_key()
+        self.cipher = Fernet(self.symmetric_key)
 
     def broadcast_to_directory(self):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as directory_socket:
-            symmetric_key = self.generate_key()
-            print((self.ds_addr, self.ds_port))
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as directory_socket:         
             directory_socket.connect((self.ds_addr, self.ds_port))
-            directory_socket.sendall(pickle.dumps((self.left_port, self.addr, symmetric_key)))
+            directory_socket.sendall(pickle.dumps((self.addr, self.left_port, self.symmetric_key)))
             
     
     def listen_for_clients(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listen_socket:
             listen_socket.bind((self.addr, self.left_port))
             listen_socket.listen()
-            print(f"Node listening on port {self.left_port}")
             while True:
                 left_socket, address = listen_socket.accept()
                 # Create a new thread for each client connection
@@ -91,29 +91,40 @@ class Node:
         self.broadcast_to_directory()
         threading.Thread(target=self.listen_for_clients).start()
 
+    def delayer_onion(self, message):     
+        message = pickle.loads(message)
+        message = [self.cipher.decrypt(x) for x in  message]
+        destination = pickle.loads(message.pop())
+        self.connect_right(destination, pickle.dumps(message))
+
+        
+    
     def handle_left(self, left_socket, address):
-        """Handle incoming connections and print received messages."""
+        """Handle incoming connections"""
         try:
+            data = b''
             while True:
-                data = left_socket.recv(4096)
-                if not data:
+                curr = left_socket.recv(4096)
+                data += curr
+                if not curr:
                     print(f"Connection with {address} closed.")
                     break
-                #print(f"Received from {address}: {pickle.loads(data)}")
+            self.delayer_onion(data)
+        
         except socket.error as e:
             print(f"Socket error with {address}: {e}")
         finally:
             left_socket.close()
 
-    def connect_right(self, next_addr, next_port, message=b""):
+    def connect_right(self, destination, message):
         """Connect to the right neighbor and send a message."""
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as right_socket:
-                right_socket.connect((next_addr, next_port))
+                right_socket.connect(destination)
                 right_socket.sendall(message)
-                #print(f"Sent message to {next_addr}:{next_port}")
+                print(f"Sent message to {destination}")
         except socket.error as e:
-            print(f"Error connecting to {next_addr}:{next_port} - {e}")
+            print(f"Error connecting ")
 
     # Key generation and encryption methods
     def generate_key(self):
@@ -135,24 +146,3 @@ class Node:
         )
         return encrypted_key
 
-    def relay_messages(self, src_socket, dst_socket):
-        """Relay messages from source socket to destination socket."""
-        try:
-            data=b''
-            while True:
-                data += src_socket.recv(4096)
-                if not data:
-                    break
-                dst_socket.sendall(data)
-        except socket.error as e:
-            print(f"Error during message relay: {e}")
-        finally:
-            print("Relay complete.")
-
-
-# Test key generation and encryption
-private_key = rsa.generate_private_key(
-    public_exponent=globals.RSA_PUBLIC_EXPONENT,
-    key_size=globals.RSA_KEY_SIZE,
-)
-public_key = private_key.public_key()

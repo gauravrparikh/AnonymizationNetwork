@@ -8,14 +8,13 @@ import pickle
 import globals
 
 class Client:
-    def __init__(self,  port=None, name="",addr="127.0.0.1", ds_addr=globals.DS_ADDR, ds_port=globals.DS_CLIENT_PORT):
+    def __init__(self,  message, port=None,  name="",addr="127.0.0.1", ds_addr=globals.DS_ADDR, ds_port=globals.DS_CLIENT_PORT):
         self.port = port
         self.addr = addr
         self.name = name
         self.ds_addr = ds_addr
         self.ds_port = ds_port
-        print("Client initialized.")
-        self.start()
+        self.start_request(message)
         
 
     def __str__(self) -> str:
@@ -26,72 +25,79 @@ class Client:
         """Connect to the directory server and request a key."""
         try:
             directory_socket=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            print((self.ds_addr, self.ds_port))
             directory_socket.connect((self.ds_addr, self.ds_port))
             directory_socket.sendall(pickle.dumps("Requesting circuit"))
         except socket.error as e:
             print(f"Error connecting to directory server: {e}")
         return directory_socket
 
-    def start(self):
+    def start_request(self, message):
         """Start the node server to listen for connections on the left port."""
         directory_socket= self.connect_to_directory_server()
-        print("Connected to directory server and received directory socket")
-        threading.Thread(target=self.listen_for_directory_path,args=((directory_socket,))).start()
+        #threading.Thread(target=self.listen_for_directory_path,args=((directory_socket,))).start()
+        data = self.listen_for_directory_path(directory_socket) 
 
+        entry, middle, exit = self.handle_directory_circuit_response(data)
+        
+        message = self.layer_onion(entry, middle, exit, message,("127.0.0.1", globals.DESTINATION_PORT) )
+        self.send_message(pickle.dumps(message), entry[0])
+
+    
+
+    def send_message(self, message, destination):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as right_socket:
+                right_socket.connect(destination)
+                right_socket.sendall(message)
+                print(f"Sent message to {destination}")
+        except socket.error as e:
+            print(f"Error connecting ")
+
+
+        
 
     def listen_for_directory_path(self,directory_socket):
         """
         Listens for the response from the directory server which is a path of nodes.
         """
-        print("Listening for directory path")
         data = directory_socket.recv(4096)    # assume data is within 4096 bytes
-        self.handle_directory_circuit_response(data) 
         directory_socket.close() 
+        return data 
+        
                 
     def handle_directory_circuit_response(self, data):
         """Given a list of nodes, build a circuit"""
-        print("In handle_directory_circuit_response")
-        self.entry,self.middle,self.exit=pickle.loads(data)
-        print("Entry node:",self.entry)
-        print("Middle node:",self.middle)
-        print("Exit node:",self.exit)
+        entry, middle, exit=pickle.loads(data)
+        
 
+        #encrypt message 
+
+        return entry,middle,exit
         # self.node1 
         # self.node2
         # self.node3
-    def encypt_message(self, message, key):
-        """
-        Encypt the message using the three keys and pass the message to the entry node. 
-        """
+   
         
-    def encrypt_message(self,message):
-        cipher1 = Fernet(self.entry[2])
-        cipher2 = Fernet(self.middle[2])
-        cipher3 = Fernet(self.exit[2])
-        encrypted_message = [cipher3.encrypt(pickle.dumps(message))] # this message can be a GET request 
+    def layer_onion(self,entry, middle, exit, message, destination):
+        cipher1 = Fernet(entry[1])
+        cipher2 = Fernet(middle[1])
+        cipher3 = Fernet(exit[1])
 
-        encrypted_message.append((pickle.dumps(self.exit[0],self.exit[1])))
+        encrypted_message = [message, destination]
+
+        encrypted_message = [cipher3.encrypt(pickle.dumps(x)) for x in encrypted_message] # this message can be a GET request 
+
+        encrypted_message.append(pickle.dumps(exit[0]))
 
         encrypted_message = [cipher2.encrypt(x) for x in encrypted_message]
 
-        encrypted_message.append(pickle.dumps((self.middle[0],self.middle[1])))
+        encrypted_message.append(pickle.dumps(middle[0]))
         # Third encryption
         encrypted_message = [cipher1.encrypt(x) for x in encrypted_message]
         
         ## send this to entry node. 
         return encrypted_message
         
-    
-    def connect_right(self, next_addr, next_port, message=b""):
-        """Connect to the right neighbor and send a message."""
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as right_socket:
-                right_socket.connect((next_addr, next_port))
-                right_socket.sendall(message)
-                print(f"Sent message to {next_addr}:{next_port}")
-        except socket.error as e:
-            print(f"Error connecting to {next_addr}:{next_port} - {e}")
 
     # Key generation and encryption methods
     def generate_key(self):
@@ -113,23 +119,3 @@ class Client:
         )
         return encrypted_key
 
-    def relay_messages(self, src_socket, dst_socket):
-        """Relay messages from source socket to destination socket."""
-        try:
-            data=b''
-            while True:
-                data += src_socket.recv(4096)
-                if not data:
-                    break
-                dst_socket.sendall(data)
-        except socket.error as e:
-            print(f"Error during message relay: {e}")
-        finally:
-            print("Relay complete.")
-
-# Test key generation and encryption
-private_key = rsa.generate_private_key(
-    public_exponent=globals.RSA_PUBLIC_EXPONENT,
-    key_size=globals.RSA_KEY_SIZE,
-)
-public_key = private_key.public_key()
