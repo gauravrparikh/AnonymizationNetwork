@@ -65,7 +65,7 @@ class DirectoryServer:
                 client_socket, address = listen_socket.accept()
                 # Create a new thread for each client connection
                 client_thread = threading.Thread(
-                    target=self.handle_connection, args=(client_socket)
+                    target=self.handle_connection, args=((client_socket,))
                 )
                 client_thread.start()
                 print(f"Started thread {client_thread.name} for client {address}")
@@ -79,5 +79,5 @@ class DirectoryServer:
 
     def start(self,):
         threading.Thread(target=self.listen_for_nodes).start()
-        # threading.Thread(target=self.listen_for_clients).start()
+        threading.Thread(target=self.listen_for_clients).start()
     
