@@ -60,22 +60,28 @@ class Client:
         # self.node1 
         # self.node2
         # self.node3
+    def encypt_message(self, message, key):
+        """
+        Encypt the message using the three keys and pass the message to the entry node. 
+        """
+        
+    def encrypt_message(self,message):
+        cipher1 = Fernet(self.entry[2])
+        cipher2 = Fernet(self.middle[2])
+        cipher3 = Fernet(self.exit[2])
+        encrypted_message = [cipher3.encrypt(pickle.dumps(message))] # this message can be a GET request 
 
+        encrypted_message.append((pickle.dumps(self.exit[0],self.exit[1])))
 
-    # def handle_server_response(self, socket, address):
-    #     """Handle incoming connections and print received messages."""
-    #     try:
-    #         while True:
-    #             data = socket.recv(4096)
-    #             if not data:
-    #                 print(f"Connection with {address} closed.")
-    #                 break
-    #             print(f"Received from {address}: {data.decode()}")
-    #     except socket.error as e:
-    #         print(f"Socket error with {address}: {e}")
-    #     finally:
-    #         left_socket.close()
+        encrypted_message = [cipher2.encrypt(x) for x in encrypted_message]
 
+        encrypted_message.append(pickle.dumps((self.middle[0],self.middle[1])))
+        # Third encryption
+        encrypted_message = [cipher1.encrypt(x) for x in encrypted_message]
+        
+        ## send this to entry node. 
+        return encrypted_message
+        
     
     def connect_right(self, next_addr, next_port, message=b""):
         """Connect to the right neighbor and send a message."""
