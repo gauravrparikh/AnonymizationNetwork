@@ -5,6 +5,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives import serialization
 import pickle
+import globals
 
 '''
 
@@ -55,7 +56,7 @@ Amazon:
 
 
 class Node:
-    def __init__(self, left_port,  right_port, ds_port, addr="127.0.0.1", ds_addr = "127.0.0.1"):
+    def __init__(self, left_port,  right_port, ds_port, addr="127.0.0.1", ds_addr = globals.DS_ADDR):
         self.left_port = left_port
         self.right_port = right_port
         self.addr = addr
@@ -148,12 +149,10 @@ class Node:
         finally:
             print("Relay complete.")
 
+
 # Test key generation and encryption
 private_key = rsa.generate_private_key(
-    public_exponent=65537,
-    key_size=2048,
+    public_exponent=globals.RSA_PUBLIC_EXPONENT,
+    key_size=globals.RSA_KEY_SIZE,
 )
 public_key = private_key.public_key()
-
-
-
