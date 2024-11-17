@@ -1,0 +1,10 @@
+# Ignore all __pycache__ directories
+__pycache__/
+source/__pycache__/
+*.pyc
+# Ignore clean.sh script
+clean.sh
+# Ignore token.txt file
+token.txt
+# Ignore all .yml files
+*.yml

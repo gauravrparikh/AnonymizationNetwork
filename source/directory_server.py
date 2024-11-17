@@ -72,7 +72,7 @@ class DirectoryServer:
     
 
     def handle_connection(self, client_socket):
-        circuit = random.sample(list(self.node_keys.keys()), globals.NUM_NODES_IN_CIRCUIT)
+        circuit = random.sample(list(self.node_keys.items()), globals.NUM_NODES_IN_CIRCUIT)
         client_socket.sendall(pickle.dumps(circuit))
         print("Sent")
 

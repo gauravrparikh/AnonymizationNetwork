@@ -15,7 +15,7 @@ class Client:
         self.ds_addr = ds_addr
         self.ds_port = ds_port
         print("Client initialized.")
-        # self.start()
+        self.start()
         
 
     def __str__(self) -> str:
@@ -25,58 +25,37 @@ class Client:
     def connect_to_directory_server(self,):
         """Connect to the directory server and request a key."""
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as directory_socket:
-                print((self.ds_addr, self.ds_port))
-                directory_socket.connect((self.ds_addr, self.ds_port))
-                directory_socket.sendall(pickle.dumps("Requesting circuit"))
+            directory_socket=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            print((self.ds_addr, self.ds_port))
+            directory_socket.connect((self.ds_addr, self.ds_port))
+            directory_socket.sendall(pickle.dumps("Requesting circuit"))
         except socket.error as e:
             print(f"Error connecting to directory server: {e}")
-            
-           
-        
-        
-    # def start(self,):
-    #     """Start the client to listen for connections on the port."""
-    #     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listen_socket:
-    #         listen_socket.bind((self.addr, self.port))
-    #         listen_socket.listen()
-    #         print(f"Client listening on port {self.port}")
-    #         while True:
-    #             socket, address = listen_socket.accept()
-    #             # Create a new thread for each client connection
-    #             thread = threading.Thread(
-    #                 target=self.handle_incoming, args=(socket, address)
-    #             )
-    #             thread.start()
-    #             print(f"Started thread {thread.name} for client {address}")
+        return directory_socket
+
     def start(self):
         """Start the node server to listen for connections on the left port."""
-        #threading.Thread(self.broadcast_to_directory).start()
-        self.connect_to_directory_server()
-        threading.Thread(target=self.listen_for_directory_path).start()
+        directory_socket= self.connect_to_directory_server()
+        print("Connected to directory server and received directory socket")
+        threading.Thread(target=self.listen_for_directory_path,args=((directory_socket,))).start()
 
-    def listen_for_directory_path(self,):
+
+    def listen_for_directory_path(self,directory_socket):
         """
         Listens for the response from the directory server which is a path of nodes.
         """
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listen_socket:
-            listen_socket.bind((self.addr, self.port))
-            listen_socket.listen()
-            print(f"Client listening on port {self.port}")
-            while True:
-                left_socket, address = listen_socket.accept()
-                # Create a new thread for each client connection
-                left_thread = threading.Thread(
-                    target=self.handle_left, args=(left_socket, address)
-                )
-                left_thread.start()
-                #print(f"Started thread {left_thread.name} for client {address}")
-                
+        print("Listening for directory path")
+        data = directory_socket.recv(4096)    # assume data is within 4096 bytes
+        self.handle_directory_circuit_response(data) 
+        directory_socket.close() 
                 
     def handle_directory_circuit_response(self, data):
         """Given a list of nodes, build a circuit"""
-
-        print(data)
+        print("In handle_directory_circuit_response")
+        self.entry,self.middle,self.exit=pickle.loads(data)
+        print("Entry node:",self.entry)
+        print("Middle node:",self.middle)
+        print("Exit node:",self.exit)
 
         # self.node1 
         # self.node2
