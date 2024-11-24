@@ -11,11 +11,11 @@ class DirectoryServer:
         """
         nodes : str is the address of the node and int is the port of the node.
         """
-        self.nodes = []
+        self.nodes = [] #list of lists, where each element is [node_addr, node_left_port, node_right_port]
         self.ds_addr = ds_addr
         self.client_port = client_port
         self.node_port = node_port
-        self.node_keys = {} # Store the public keys of the nodes.
+        # self.node_keys = {} # Store the public keys of the nodes.
         self.start()
     
   
@@ -25,9 +25,9 @@ class DirectoryServer:
         data = node_socket.recv(4096)
 
         #print("Data", pickle.loads(data))
-        node_addr, node_port, public_key = pickle.loads(data)
-        self.nodes.append((node_addr, node_port))
-        self.node_keys[(node_addr, node_port)] = public_key
+        node_addr, node_left_port, node_right_port = pickle.loads(data)
+        self.nodes.append([node_addr, node_left_port, node_right_port])
+        # self.node_keys[(node_addr, node_port)] = public_key
         node_socket.close()
         
 
@@ -68,8 +68,9 @@ class DirectoryServer:
     
 
     def handle_connection(self, client_socket):
-        circuit = random.sample(list(self.node_keys.items()), globals.NUM_NODES_IN_CIRCUIT)
-        client_socket.sendall(pickle.dumps(circuit))
+        circuit = random.sample(self.nodes, globals.NUM_NODES_IN_CIRCUIT)
+        client_socket.sendall(pickle.dumps(circuit)) 
+        #sends back a [[node address, node left_port, node right_port],[node address, node left_port, node right_port], [node address, node left_port, node right_port]]
         #print("Sent")
 
 

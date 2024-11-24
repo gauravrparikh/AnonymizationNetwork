@@ -18,7 +18,6 @@ class Client:
         self.client_right_port = client_right_port
         self.client_right_addr = client_addr
         
-        
         # to connect to the directory server
         self.ds_addr = ds_addr
         self.ds_port = ds_port
@@ -150,10 +149,15 @@ class Client:
         private_key_a = parameters.generate_private_key()
         public_key_A = private_key_a.public_key()
         
+        entry_addr, entry_left_port, entry_right_port = entry_node
+        entry_sending_address = (entry_addr, entry_left_port) #final destination in this function (node 1's left port)
+        
+        client_return_address = (self.client_right_addr,self.client_right_port) # forward back to ourselves (entry node's right port)
+
         # construct message as [public_key_A, IS_CIRCUIT_SETUP flag, client_location tuple, parameters]
-        message = [public_key_A, IS_CIRCUIT_SETUP, (self.client_right_addr,self.client_right_port), parameters]
+        message = [public_key_A, IS_CIRCUIT_SETUP, client_return_address, parameters]
         # Send A
-        self.send_message(message, entry_node[0])
+        self.send_message(message, entry_sending_address) #TODO: encrypt with TLS
 
         # Receive B
         entry_node_socket = self.connect_to_entry_node(entry_node)
@@ -179,11 +183,18 @@ class Client:
         public_key_C = private_key_c.public_key()
 
         # Send C (encrypted with entry_symmetric_key)
-        message = [ public_key_C, IS_CIRCUIT_SETUP,entry_node[0], parameters] # parameters is an object. TODO: find out if this object can be sent correctly
+        entry_addr, entry_left_port, entry_right_port = entry_node
+        entry_return_address = (entry_addr, entry_right_port) # forward back to ourselves
+        entry_sending_address = (entry_addr, entry_left_port) # send to the entry node to forward to the middle node
+
+        middle_addr, middle_left_port, middle_right_port = middle_node
+        middle_sending_address = (middle_addr, middle_left_port) #final destination in this function
+
+        message = [ public_key_C, IS_CIRCUIT_SETUP, return_address, parameters] # parameters is an object. TODO: find out if this object can be sent correctly
         fernet_cipher = Fernet(entry_symmetric_key)
         encrypted_message = [fernet_cipher.encrypt(pickle.dumps(x)) for x in message]
-        encrypted_message.extend([pickle.dumps(IS_CIRCUIT_SETUP), pickle.dumps(middle_node[0])])
-        self.send_message(encrypted_message, entry_node[0])
+        encrypted_message.extend([pickle.dumps(IS_CIRCUIT_SETUP), pickle.dumps(middle_sending_address)])
+        self.send_message(encrypted_message, sending_address)
 
         # Receive D
         entry_node_socket = self.connect_to_entry_node(entry_node)
@@ -212,20 +223,32 @@ class Client:
         fernet_cipher_entry = Fernet(entry_symmetric_key)
         fernet_cipher_middle = Fernet(middle_symmetric_key)
 
-        #[public_key_E, IS_CIRCUIT_SETUP, middle_node_addr, parameters]
-        encrypted_message = [public_key_E, IS_CIRCUIT_SETUP, middle_node[0], parameters]
+        exit_addr, exit_left_port, exit_right_port = exit_node
+        exit_sending_address = (exit_addr, exit_left_port)
+
+        middle_addr, middle_left_port, middle_right_port = middle_node
+        middle_return_address = (middle_addr, middle_right_port) # forward back to ourselves
+        middle_sending_address = (middle_addr, middle_left_port) 
+
+        entry_addr, entry_left_port, entry_right_port = entry_node
+        entry_sending_address = (entry_addr, entry_left_port) 
+
+
+
+        #[public_key_E, IS_CIRCUIT_SETUP, middle_return_address, parameters]
+        encrypted_message = [public_key_E, IS_CIRCUIT_SETUP, middle_return_address, parameters]
 
         #[middle_key(public_key_E), middle_key(IS_CIRCUIT_SETUP), middle_key(exit_node_addr), middle_key(parameters)]
         # This is an intermediary message 
         encrypted_message = [fernet_cipher_middle.encrypt(pickle.dumps(x)) for x in encrypted_message] 
 
         #[middle_key(public_key_E), middle_key(IS_CIRCUIT_SETUP), middle_key(exit_node_addr),middle_key(parameters),IS_CIRCUIT_SETUP, middle_node_addr]
-        encrypted_message.extend([pickle.dumps(IS_CIRCUIT_SETUP), pickle.dumps(middle_node[0])]) 
+        encrypted_message.extend([pickle.dumps(IS_CIRCUIT_SETUP), pickle.dumps(middle_sending_address)]) 
 
         #[entry_key(middle_key(public_key_E)), entry_key(middle_key(IS_CIRCUIT_SETUP)), entry_key(middle_key(exit_node_addr)), entry_key(IS_CIRCUIT_SETUP), entry_key(middle_node_addr)]
         encrypted_message = [fernet_cipher_entry.encrypt(pickle.dumps(x)) for x in encrypted_message]
 
-        self.send_message(encrypted_message, entry_node[0])
+        self.send_message(encrypted_message, entry_sending_address)
 
         # Receive F
         entry_node_socket = self.connect_to_entry_node(entry_node)
@@ -244,16 +267,18 @@ class Client:
     
     def connect_to_entry_node(self, entry_node):
         """Connect to the entry node."""
+        entry_addr, entry_left_port, entry_right_port = entry_node
+        sending_address = (entry_addr, entry_left_port) #entry node's left port
         try:
             entry_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            entry_socket.connect(entry_node[0])
+            entry_socket.connect(sending_address)
         except socket.error as e:
             print(f"Error connecting to directory server: {e}")
         return entry_socket
 
 
     def receive_data_from_entry_node(self, entry_socket):
-        data = entry_socket.recv(4096)    # assume data is within 4096 bytes
+        data = entry_socket.recv(4096)    # TODO: add a while loop for large amoutns of data, since we are assuming here currently that data is within 4096 bytes 
         entry_socket.close() 
         return pickle.loads(data)
 
@@ -300,7 +325,7 @@ class Client:
         data = directory_socket.recv(4096)    # assume data is within 4096 bytes
         directory_socket.close() 
         entry, middle, exit = pickle.loads(data)
-
+        #entry = [entry_addr, entry_left_port, entry_right_port]
         return entry, middle, exit 
         
    

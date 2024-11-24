@@ -24,7 +24,8 @@ def main():
         node.start()
     deestination = Destination(globals.DESTINATION_PORT)
     # Create client
-    client = Client("Hello")
+    client = Client()
+    client.start()
     #a client is not a client a client is a client request 
     #client.start_request("Hello")
 
