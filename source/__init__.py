@@ -13,6 +13,7 @@ def main():
     directory_server = DirectoryServer(globals.DS_ADDR, globals.DS_CLIENT_PORT, globals.DS_NODE_PORT)
     nodes = []
     port = 40000
+    browser_port=8889
 
     # Create nodes
     for i in range(5):

@@ -8,15 +8,16 @@ import pickle
 from globals import IS_CIRCUIT_SETUP
 
 class Client:
-    def __init__(self, browser_port=8889, browser_addr="127.0.0.1", entry_node_port=None, entry_node_addr="127.0.0.1", ds_addr=globals.DS_ADDR, ds_port=globals.DS_CLIENT_PORT):
+    def __init__(self, browser_port=8889, client_right_port=None, client_addr="127.0.0.1", ds_addr=globals.DS_ADDR, ds_port=globals.DS_CLIENT_PORT):
         #for hostfile for the website
         self.browser_port = browser_port
-        self.browser_addr = browser_addr
+        self.browser_addr = client_addr
         self.socket_to_browser: socket.socket = None
 
-        # for getting information back through the circuit
-        self.entry_node_port = entry_node_port
-        self.entry_node_addr = entry_node_addr
+        # for getting information back through the circuit, client right port 
+        self.client_right_port = client_right_port
+        self.client_right_addr = client_addr
+        
         
         # to connect to the directory server
         self.ds_addr = ds_addr
@@ -49,7 +50,7 @@ class Client:
             browser_handler_thread.start()
 
         
-    def handle_browser( self, browser_socket: socket.socket):
+    def handle_browser(self, browser_socket: socket.socket):
         
         directory_socket = self.connect_to_directory_server()
 
@@ -113,7 +114,7 @@ class Client:
 
     def get_response_from_destination_server(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listen_socket:
-            listen_socket.bind((self.entry_node_addr, self.entry_node_port))
+            listen_socket.bind((self.client_right_addr, self.entry_node_port))
             listen_socket.listen()
             while True:
                 right_socket, address = listen_socket.accept()
@@ -144,13 +145,15 @@ class Client:
     def exchange_DH_entry_node(self, entry_node):
         # Send parameters (g, p)
         parameters = dh.generate_parameters(generator=2, key_size=2048)
-
+       
         # Generate a and A
         private_key_a = parameters.generate_private_key()
         public_key_A = private_key_a.public_key()
-
+        
+        # construct message as [public_key_A, IS_CIRCUIT_SETUP flag, client_location tuple, parameters]
+        message = [public_key_A, IS_CIRCUIT_SETUP, (self.client_right_addr,self.client_right_port), parameters]
         # Send A
-        self.send_message(public_key_A, entry_node[0])
+        self.send_message(message, entry_node[0])
 
         # Receive B
         entry_node_socket = self.connect_to_entry_node(entry_node)
@@ -167,23 +170,6 @@ class Client:
 
         return derived_key
 
-
-    def connect_to_entry_node(self, entry_node):
-        """Connect to the entry node."""
-        try:
-            entry_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            entry_socket.connect(entry_node[0])
-        except socket.error as e:
-            print(f"Error connecting to directory server: {e}")
-        return entry_socket
-
-
-    def receive_data_from_entry_node(self, entry_socket):
-        data = entry_socket.recv(4096)    # assume data is within 4096 bytes
-        entry_socket.close() 
-        return pickle.loads(data)
-
-
     def exhange_DH_middle_node(self, entry_node, entry_symmetric_key, middle_node):
         # Send parameters (g, p)
         parameters = dh.generate_parameters(generator=2, key_size=2048)
@@ -193,9 +179,10 @@ class Client:
         public_key_C = private_key_c.public_key()
 
         # Send C (encrypted with entry_symmetric_key)
-        message = [IS_CIRCUIT_SETUP, public_key_C, middle_node[0]]
+        message = [ public_key_C, IS_CIRCUIT_SETUP,entry_node[0], parameters] # parameters is an object. TODO: find out if this object can be sent correctly
         fernet_cipher = Fernet(entry_symmetric_key)
         encrypted_message = [fernet_cipher.encrypt(pickle.dumps(x)) for x in message]
+        encrypted_message.extend([pickle.dumps(IS_CIRCUIT_SETUP), pickle.dumps(middle_node[0])])
         self.send_message(encrypted_message, entry_node[0])
 
         # Receive D
@@ -225,13 +212,14 @@ class Client:
         fernet_cipher_entry = Fernet(entry_symmetric_key)
         fernet_cipher_middle = Fernet(middle_symmetric_key)
 
-        #[public_key_E, IS_CIRCUIT_SETUP, exit_node_addr]
-        encrypted_message = [public_key_E, IS_CIRCUIT_SETUP, exit_node[0]] 
+        #[public_key_E, IS_CIRCUIT_SETUP, middle_node_addr, parameters]
+        encrypted_message = [public_key_E, IS_CIRCUIT_SETUP, middle_node[0], parameters]
 
-        #[middle_key(public_key_E), middle_key(IS_CIRCUIT_SETUP), middle_key(exit_node_addr)]
+        #[middle_key(public_key_E), middle_key(IS_CIRCUIT_SETUP), middle_key(exit_node_addr), middle_key(parameters)]
+        # This is an intermediary message 
         encrypted_message = [fernet_cipher_middle.encrypt(pickle.dumps(x)) for x in encrypted_message] 
 
-        #[middle_key(public_key_E), middle_key(IS_CIRCUIT_SETUP), middle_key(exit_node_addr), IS_CIRCUIT_SETUP, middle_node_addr]
+        #[middle_key(public_key_E), middle_key(IS_CIRCUIT_SETUP), middle_key(exit_node_addr),middle_key(parameters),IS_CIRCUIT_SETUP, middle_node_addr]
         encrypted_message.extend([pickle.dumps(IS_CIRCUIT_SETUP), pickle.dumps(middle_node[0])]) 
 
         #[entry_key(middle_key(public_key_E)), entry_key(middle_key(IS_CIRCUIT_SETUP)), entry_key(middle_key(exit_node_addr)), entry_key(IS_CIRCUIT_SETUP), entry_key(middle_node_addr)]
@@ -253,6 +241,21 @@ class Client:
         ).derive(shared_key)
 
         return derived_key
+    
+    def connect_to_entry_node(self, entry_node):
+        """Connect to the entry node."""
+        try:
+            entry_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            entry_socket.connect(entry_node[0])
+        except socket.error as e:
+            print(f"Error connecting to directory server: {e}")
+        return entry_socket
+
+
+    def receive_data_from_entry_node(self, entry_socket):
+        data = entry_socket.recv(4096)    # assume data is within 4096 bytes
+        entry_socket.close() 
+        return pickle.loads(data)
 
     def receive_data_from_middle_via_entry_node(self, entry_socket, symmetric_cipher):
         """Receives data sent by middle node to entry node"""
@@ -302,14 +305,14 @@ class Client:
         
    
         
-    def layer_onion(self, entry_symmetric_key, middle, middle_symmetric_key, exit, exit_symmetric_key, message, destination):
+    def layer_onion(self, entry_symmetric_key, middle, middle_symmetric_key, exit, exit_symmetric_key, message, destination_server):
         cipher1 = Fernet(entry_symmetric_key)
         cipher2 = Fernet(middle_symmetric_key)
         cipher3 = Fernet(exit_symmetric_key)
 
-        encrypted_message = [message, destination]
+        encrypted_message = [message, destination_server]
 
-        encrypted_message = [cipher3.encrypt(pickle.dumps(x)) for x in encrypted_message] # this message can be a GET request 
+        encrypted_message = [cipher3.encrypt(pickle.dumps(x)) for x in encrypted_message]
 
         encrypted_message.append(pickle.dumps(exit[0]))
 
