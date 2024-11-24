@@ -1,11 +1,11 @@
 import threading
 import socket
 from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives.asymmetric import rsa, padding, dh
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 import pickle
-import globals
+from globals import IS_CIRCUIT_SETUP
 
 class Client:
     def __init__(self,  message, port=None,  name="",addr="127.0.0.1", ds_addr=globals.DS_ADDR, ds_port=globals.DS_CLIENT_PORT):
@@ -14,6 +14,8 @@ class Client:
         self.name = name
         self.ds_addr = ds_addr
         self.ds_port = ds_port
+
+        # TODO: MAKE THIS THREADED
         self.start_request(message)
         
 
@@ -21,28 +23,144 @@ class Client:
         return self.name
     
 
+    def start_request(self, message):
+        """Start the node server to listen for connections on the left port."""
+        # Connect to directory and create circuit
+        directory_socket = self.connect_to_directory_server()
+
+        # Each node is of the form: [(node_addr, node_port), public_key]
+        entry, middle, exit = self.get_circuit(directory_socket) 
+        
+        # Generate symmetric keys with Diffie Hellman
+        entry_symmetric_key = self.exchange_DH_entry_node(entry)
+        middle_symmetric_key = self.exhange_DH_middle_node(entry, entry_symmetric_key, middle)
+        exit_symmetric_key = self.exchange_DH_exit_node(entry, entry_symmetric_key, middle, middle_symmetric_key, exit)
+
+        message = self.layer_onion(entry, middle, exit, message,("127.0.0.1", globals.DESTINATION_PORT) )
+        self.send_message(pickle.dumps(message), entry[0])
+
+
+    def exchange_DH_entry_node(self, entry_node):
+        # Send parameters (g, p)
+        parameters = dh.generate_parameters(generator=2, key_size=2048)
+
+        # Generate a and A
+        private_key_a = parameters.generate_private_key()
+        public_key_A = private_key_a.public_key()
+
+        # Send A
+        self.send_message(public_key_A, entry_node[0])
+
+        # Receive B
+        entry_node_socket = self.connect_to_entry_node(entry_node)
+        public_key_B = self.receive_data_from_entry_node(entry_node_socket)
+
+        # Construct symmetric key 
+        shared_key = private_key_a.exchange(public_key_B)
+        derived_key = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=None,
+            info=b'handshake data',
+        ).derive(shared_key)
+
+        return derived_key
+
+
+    def connect_to_entry_node(self, entry_node):
+        """Connect to the entry node."""
+        try:
+            entry_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            entry_socket.connect(entry_node[0])
+        except socket.error as e:
+            print(f"Error connecting to directory server: {e}")
+        return entry_socket
+
+
+    def receive_data_from_entry_node(self, entry_socket):
+        data = entry_socket.recv(4096)    # assume data is within 4096 bytes
+        entry_socket.close() 
+        return pickle.loads(data)
+
+
+    def exhange_DH_middle_node(self, entry_node, entry_symmetric_key, middle_node):
+        # Send parameters (g, p)
+        parameters = dh.generate_parameters(generator=2, key_size=2048)
+
+        # Generate c and C
+        private_key_c = parameters.generate_private_key()
+        public_key_C = private_key_c.public_key()
+
+        # Send C (encrypted with entry_symmetric_key)
+        message = [IS_CIRCUIT_SETUP, public_key_C, middle_node[0]]
+        fernet_cipher = Fernet(entry_symmetric_key)
+        encrypted_message = [fernet_cipher.encrypt(pickle.dumps(x)) for x in message]
+        self.send_message(encrypted_message, entry_node[0])
+
+        # Receive D
+        entry_node_socket = self.connect_to_entry_node(entry_node)
+        public_key_D = self.receive_data_from_middle_entry_node(entry_node_socket, fernet_cipher)
+
+        # Construct symmetric key 
+        shared_key = private_key_c.exchange(public_key_D)
+        derived_key = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=None,
+            info=b'handshake data',
+        ).derive(shared_key)
+
+        return derived_key
+
+    def exchange_DH_exit_node(self, entry_node, entry_symmetric_key, middle_node, middle_symmetric_key, exit_node):
+        # Send parameters (g, p)
+        parameters = dh.generate_parameters(generator=2, key_size=2048)
+
+        # Generate e and E
+        private_key_e = parameters.generate_private_key()
+        public_key_E = private_key_e.public_key()
+
+        # Send C (encrypted with entry_symmetric_key)
+        message = [IS_CIRCUIT_SETUP, public_key_E, exit_node[0]]
+        fernet_cipher_entry = Fernet(entry_symmetric_key)
+        fernet_cipher_middle = Fernet(middle_symmetric_key)
+
+        encrypted_message_middle = [fernet_cipher_middle.encrypt(pickle.dumps(x)) for x in message]
+        encrypted_message_entry = [fernet_cipher_middle.encrypt(pickle.dumps(x)) for x in encrypted_message_middle]
+        self.send_message(encrypted_message_entry, entry_node[0])
+
+        # Receive F
+        entry_node_socket = self.connect_to_entry_node(entry_node)
+        public_key_F = self.receive_data_from_middle_entry_node(entry_node_socket, fernet_cipher)
+
+        # Construct symmetric key 
+        shared_key = private_key_c.exchange(public_key_D)
+        derived_key = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=None,
+            info=b'handshake data',
+        ).derive(shared_key)
+
+        return derived_key
+
+    def receive_data_from_middle_entry_node(self, entry_socket, symmetric_cipher):
+        """Receives data sent by middle node to entry node"""
+        data = entry_socket.recv(4096)
+        entry_socket.close() 
+        return symmetric_cipher.decrypt(pickle.loads(data))
+
+
     def connect_to_directory_server(self,):
         """Connect to the directory server and request a key."""
         try:
-            directory_socket=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            directory_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             directory_socket.connect((self.ds_addr, self.ds_port))
             directory_socket.sendall(pickle.dumps("Requesting circuit"))
         except socket.error as e:
             print(f"Error connecting to directory server: {e}")
         return directory_socket
 
-    def start_request(self, message):
-        """Start the node server to listen for connections on the left port."""
-        directory_socket= self.connect_to_directory_server()
-        #threading.Thread(target=self.listen_for_directory_path,args=((directory_socket,))).start()
-        data = self.listen_for_directory_path(directory_socket) 
-
-        entry, middle, exit = self.handle_directory_circuit_response(data)
-        
-        message = self.layer_onion(entry, middle, exit, message,("127.0.0.1", globals.DESTINATION_PORT) )
-        self.send_message(pickle.dumps(message), entry[0])
-
-    
 
     def send_message(self, message, destination):
         try:
@@ -56,26 +174,16 @@ class Client:
 
         
 
-    def listen_for_directory_path(self,directory_socket):
+    def get_circuit(self,directory_socket):
         """
         Listens for the response from the directory server which is a path of nodes.
         """
         data = directory_socket.recv(4096)    # assume data is within 4096 bytes
         directory_socket.close() 
-        return data 
-        
-                
-    def handle_directory_circuit_response(self, data):
-        """Given a list of nodes, build a circuit"""
-        entry, middle, exit=pickle.loads(data)
-        
+        entry, middle, exit = pickle.loads(data)
 
-        #encrypt message 
-
-        return entry,middle,exit
-        # self.node1 
-        # self.node2
-        # self.node3
+        return entry, middle, exit 
+        
    
         
     def layer_onion(self,entry, middle, exit, message, destination):
