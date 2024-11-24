@@ -14,9 +14,8 @@ class Client:
         self.name = name
         self.ds_addr = ds_addr
         self.ds_port = ds_port
-
-        # TODO: MAKE THIS THREADED
-        self.start_request(message)
+        self.thread = threading.Thread(target=self.start_request, args=(message,))
+        self.thread.start()
         
 
     def __str__(self) -> str:
