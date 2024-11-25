@@ -7,3 +7,9 @@ RSA_KEY_SIZE = 2048
 NUM_NODES = 10
 NUM_NODES_IN_CIRCUIT = 3
 IS_CIRCUIT_SETUP = "is_circuit_setup"
+
+IS_LOGGING = True
+
+def LOG(message):
+    if (IS_LOGGING):
+        print(message)

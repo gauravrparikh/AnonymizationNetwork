@@ -9,14 +9,14 @@ from globals import IS_CIRCUIT_SETUP
 
 class Client:
     def __init__(self, browser_port=8889, client_right_port=None, client_addr="127.0.0.1", ds_addr=globals.DS_ADDR, ds_port=globals.DS_CLIENT_PORT):
+        self.my_address = client_addr
+        
         #for hostfile for the website
         self.browser_port = browser_port
-        self.browser_addr = client_addr
         self.socket_to_browser: socket.socket = None
 
         # for getting information back through the circuit, client right port 
         self.client_right_port = client_right_port
-        self.client_right_addr = client_addr
         
         # to connect to the directory server
         self.ds_addr = ds_addr
@@ -34,7 +34,7 @@ class Client:
         self.socket_to_browser = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
         # Bind the socket (sets itself up) to a specific address and port
-        self.socket_to_browser.bind((self.browser_addr, self.browser_port))
+        self.socket_to_browser.bind((self.my_address, self.browser_port))
 
         # Listen for incoming connections
         self.socket_to_browser.listen()
@@ -113,7 +113,7 @@ class Client:
 
     def get_response_from_destination_server(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listen_socket:
-            listen_socket.bind((self.client_right_addr, self.entry_node_port))
+            listen_socket.bind((self.my_address, self.entry_node_port))
             listen_socket.listen()
             while True:
                 right_socket, address = listen_socket.accept()
@@ -142,9 +142,9 @@ class Client:
             right_socket.close()        
 
     def exchange_DH_entry_node(self, entry_node):
-        # Send parameters (g, p)
+        # Generate parameters (g, p)
         parameters = dh.generate_parameters(generator=2, key_size=2048)
-       
+
         # Generate a and A
         private_key_a = parameters.generate_private_key()
         public_key_A = private_key_a.public_key()
@@ -152,16 +152,17 @@ class Client:
         entry_addr, entry_left_port, entry_right_port = entry_node
         entry_sending_address = (entry_addr, entry_left_port) #final destination in this function (node 1's left port)
         
-        client_return_address = (self.client_right_addr,self.client_right_port) # forward back to ourselves (entry node's right port)
+        client_return_address = (self.my_address, self.client_right_port) # forward back to ourselves (entry node's right port)
 
         # construct message as [public_key_A, IS_CIRCUIT_SETUP flag, client_location tuple, parameters]
         message = [public_key_A, IS_CIRCUIT_SETUP, client_return_address, parameters]
-        # Send A
+        # Send A and parameters
         self.send_message(message, entry_sending_address) #TODO: encrypt with TLS
 
         # Receive B
-        entry_node_socket = self.connect_to_entry_node(entry_node)
-        public_key_B = self.receive_data_from_entry_node(entry_node_socket)
+        # `client_entry_node_socket` is the client's entry node socket (i.e. connection between client and entry node)
+        client_entry_node_socket = self.connect_to_entry_node(entry_node)
+        public_key_B = self.receive_data_from_entry_node(client_entry_node_socket)
 
         # Construct symmetric key 
         shared_key = private_key_a.exchange(public_key_B)
@@ -175,30 +176,29 @@ class Client:
         return derived_key
 
     def exhange_DH_middle_node(self, entry_node, entry_symmetric_key, middle_node):
-        # Send parameters (g, p)
+        # Generate parameters (g, p)
         parameters = dh.generate_parameters(generator=2, key_size=2048)
 
         # Generate c and C
         private_key_c = parameters.generate_private_key()
         public_key_C = private_key_c.public_key()
 
-        # Send C (encrypted with entry_symmetric_key)
+        # Send C (encrypted with entry_symmetric_key) and parameters
         entry_addr, entry_left_port, entry_right_port = entry_node
-        entry_return_address = (entry_addr, entry_right_port) # forward back to ourselves
-        entry_sending_address = (entry_addr, entry_left_port) # send to the entry node to forward to the middle node
-
         middle_addr, middle_left_port, middle_right_port = middle_node
-        middle_sending_address = (middle_addr, middle_left_port) #final destination in this function
 
-        message = [ public_key_C, IS_CIRCUIT_SETUP, return_address, parameters] # parameters is an object. TODO: find out if this object can be sent correctly
+        # parameters is an object. TODO: find out if this object can be sent correctly
+        # Send from middle node's left port to entry node's right port
+        message = [public_key_C, IS_CIRCUIT_SETUP, (entry_addr, entry_right_port), parameters] 
         fernet_cipher = Fernet(entry_symmetric_key)
         encrypted_message = [fernet_cipher.encrypt(pickle.dumps(x)) for x in message]
-        encrypted_message.extend([pickle.dumps(IS_CIRCUIT_SETUP), pickle.dumps(middle_sending_address)])
-        self.send_message(encrypted_message, sending_address)
+        encrypted_message.extend([pickle.dumps(IS_CIRCUIT_SETUP), pickle.dumps((middle_addr, middle_left_port))])
+        self.send_message(encrypted_message, (entry_addr, entry_left_port))
 
         # Receive D
-        entry_node_socket = self.connect_to_entry_node(entry_node)
-        public_key_D = self.receive_data_from_middle_via_entry_node(entry_node_socket, fernet_cipher)
+        # `client_entry_node_socket` is the client's entry node socket (i.e. connection between client and entry node)
+        client_entry_node_socket = self.connect_to_entry_node(entry_node)
+        public_key_D = self.receive_data_from_middle_via_entry_node(client_entry_node_socket, fernet_cipher)
 
         # Construct symmetric key 
         shared_key = private_key_c.exchange(public_key_D)
@@ -212,47 +212,40 @@ class Client:
         return derived_key
 
     def exchange_DH_exit_node(self, entry_node, entry_symmetric_key, middle_node, middle_symmetric_key, exit_node):
-        # Send parameters (g, p)
+        # generate parameters (g, p)
         parameters = dh.generate_parameters(generator=2, key_size=2048)
 
         # Generate e and E
         private_key_e = parameters.generate_private_key()
         public_key_E = private_key_e.public_key()
 
-        # Send C (encrypted with entry_symmetric_key)
+        # Send E (encrypted with entry_symmetric_key) and parameters
         fernet_cipher_entry = Fernet(entry_symmetric_key)
         fernet_cipher_middle = Fernet(middle_symmetric_key)
 
         exit_addr, exit_left_port, exit_right_port = exit_node
-        exit_sending_address = (exit_addr, exit_left_port)
-
         middle_addr, middle_left_port, middle_right_port = middle_node
-        middle_return_address = (middle_addr, middle_right_port) # forward back to ourselves
-        middle_sending_address = (middle_addr, middle_left_port) 
-
         entry_addr, entry_left_port, entry_right_port = entry_node
-        entry_sending_address = (entry_addr, entry_left_port) 
 
-
-
-        #[public_key_E, IS_CIRCUIT_SETUP, middle_return_address, parameters]
-        encrypted_message = [public_key_E, IS_CIRCUIT_SETUP, middle_return_address, parameters]
+        #[public_key_E, IS_CIRCUIT_SETUP, middle_return_address, parameters]; Return to middle node's right port
+        encrypted_message = [public_key_E, IS_CIRCUIT_SETUP, (middle_addr, middle_right_port), parameters]
 
         #[middle_key(public_key_E), middle_key(IS_CIRCUIT_SETUP), middle_key(exit_node_addr), middle_key(parameters)]
         # This is an intermediary message 
         encrypted_message = [fernet_cipher_middle.encrypt(pickle.dumps(x)) for x in encrypted_message] 
 
         #[middle_key(public_key_E), middle_key(IS_CIRCUIT_SETUP), middle_key(exit_node_addr),middle_key(parameters),IS_CIRCUIT_SETUP, middle_node_addr]
-        encrypted_message.extend([pickle.dumps(IS_CIRCUIT_SETUP), pickle.dumps(middle_sending_address)]) 
+        encrypted_message.extend([pickle.dumps(IS_CIRCUIT_SETUP), pickle.dumps((middle_addr, middle_left_port))]) 
 
         #[entry_key(middle_key(public_key_E)), entry_key(middle_key(IS_CIRCUIT_SETUP)), entry_key(middle_key(exit_node_addr)), entry_key(IS_CIRCUIT_SETUP), entry_key(middle_node_addr)]
         encrypted_message = [fernet_cipher_entry.encrypt(pickle.dumps(x)) for x in encrypted_message]
 
-        self.send_message(encrypted_message, entry_sending_address)
+        self.send_message(encrypted_message, (entry_addr, entry_left_port))
 
         # Receive F
-        entry_node_socket = self.connect_to_entry_node(entry_node)
-        public_key_F = self.receive_data_from_exit_via_entry_node(entry_node_socket, fernet_cipher_entry, fernet_cipher_middle)
+        # `client_entry_node_socket` is the client's entry node socket (i.e. connection between client and entry node)
+        client_entry_node_socket = self.connect_to_entry_node(entry_node)
+        public_key_F = self.receive_data_from_exit_via_entry_node(client_entry_node_socket, fernet_cipher_entry, fernet_cipher_middle)
 
         # Construct symmetric key 
         shared_key = private_key_e.exchange(public_key_F)
@@ -282,11 +275,11 @@ class Client:
         entry_socket.close() 
         return pickle.loads(data)
 
-    def receive_data_from_middle_via_entry_node(self, entry_socket, symmetric_cipher):
+    def receive_data_from_middle_via_entry_node(self, entry_socket, entry_symmetric_cipher):
         """Receives data sent by middle node to entry node"""
         data = entry_socket.recv(4096)
         entry_socket.close() 
-        return symmetric_cipher.decrypt(pickle.loads(data))
+        return entry_symmetric_cipher.decrypt(pickle.loads(data))
 
     def receive_data_from_exit_via_entry_node(self, entry_socket, entry_symmetric_cipher, middle_symmetric_cipher):
         """Receives data sent by exit node to entry node"""

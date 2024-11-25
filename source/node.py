@@ -6,116 +6,61 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 import pickle
-import globals
-
-'''
-
-Each node has a set of ports that it has to listen on and the set of ports it has to pass on the message  
-It maintains a table that links which left_port is communicating to which other left_port. 
-
-Each connection is called a circuit. 
-
-
-Node 1:
-    Receive message from client 
-    decrypt_message(PrivateKey of Node1, message)-> address to Node 2
-    send_message()-> Node 2
-    receive_message()-> Node 2
-    sender_address=store_sender_address()
-    Manage Ports and sockets :
-        Manage left_port linkages :
-         Store the address of sender and reciver as tuple 
-
-
-    Port A.1, Port A.2 <-> Port B.1, Port B.2
-    if I receive on A then a relay to B 
-    if I receive on B then I encrypt and send to A
-
-
-
-        
-Node 2:
-    Receive message from node1
-    decrypt_message(PrivateKey of Node1, message)-> address to Node 2
-    send_message()-> Node 2
-
-
-Node 3:
-    Receive message from node2
-    decrypt_message(PrivateKey of Node1, message)-> address to Node 2
-    send_message()-> Node 3
-    receive_message()-> Node 
-
-Amazon:
-    Receives message from Node 3
-    sender address = store_sender_address()
-    return information to the sender address. 
-    
-
-
-'''
-
+from globals import LOG
 
 class Node:
-    def __init__(self, left_port,  right_port, ds_port, addr="127.0.0.1", ds_addr = globals.DS_ADDR):
-        self.left_port = left_port
-        self.right_port = right_port
-        self.addr = addr
-        self.ds_addr = ds_addr
-        self.ds_port = ds_port
+    def __init__(self, left_port,  right_port, directory_server_port, addr="127.0.0.1", directory_server_addr = globals.directory_server_addr):
+        self.my_left_port = left_port
+        self.my_right_port = right_port
+        self.my_addr = addr
+        self.directory_server_addr = directory_server_addr
+        self.directory_server_port = directory_server_port
         self.symmetric_key = None 
         self.cipher = None
         self.parameters = None
-        self.return_location=None # this is a tuple of address and port of the prior node or client 
+        self.return_location = None # this is a tuple of address and port of the prior node or client 
     
+
     def start(self):
         """Start the node server to listen for connections on the left port and right port."""
-        #threading.Thread(self.broadcast_to_directory).start()
+        LOG("Starting Node")
         self.broadcast_to_directory()
         threading.Thread(target=self.listen_to_left).start()
         threading.Thread(target=self.listen_to_right).start()
 
-    def broadcast_to_directory(self):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as directory_socket:         
-            directory_socket.connect((self.ds_addr, self.ds_port))
-            directory_socket.sendall(pickle.dumps((self.addr, self.left_port, self.right_port))) # TODO : This is not right, add a public key here 
-            
-    def listen_to_left(self):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listen_socket:
-            listen_socket.bind((self.addr, self.left_port))
-            listen_socket.listen()
-            while True:
-                left_socket, address = listen_socket.accept()
-                # Create a new thread for each client connection
-                left_thread = threading.Thread(
-                    target=self.handle_left, args=(left_socket, address)
-                )
-                left_thread.start()
-                #print(f"Started thread {left_thread.name} for client {address}")
-                
-    def listen_to_right(self):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listen_socket:
-            listen_socket.bind((self.addr, self.right_port))
-            listen_socket.listen()
-            while True:
-                right_socket, address = listen_socket.accept()
-                # Create a new thread for each client connection
-                right_thread = threading.Thread(
-                    target=self.handle_right, args=(right_socket, address) #TODO: handle right
-                )
-                right_thread.start()
-                #print(f"Started thread {right_thread.name} for client {address}")
-                
     def start(self):
         """Start the node server to listen for connections on the left port."""
         #threading.Thread(self.broadcast_to_directory).start()
         self.broadcast_to_directory()
         threading.Thread(target=self.listen_for_clients).start()
 
-    def unlayer_onion(self, message):  
-    
-    # either the message is a public key or it has to be relayed 
-    
+    def broadcast_to_directory(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as directory_socket:
+            LOG("Broadcasting Node to Directory")
+            directory_socket.connect((self.directory_server_addr, self.directory_server_port))
+            directory_socket.sendall(pickle.dumps((self.my_addr, self.my_left_port, self.my_right_port))) # TODO : This is not right, add a public key here 
+            
+    def listen(self, port, handler):
+        """
+        Listens for incoming connections on the specified port and handles them using the specified handler.
+
+        :param port: The port number to listen on.
+        :param handler: The handler function to call for each accepted connection.
+        """
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listen_socket:
+            listen_socket.bind((self.my_addr, port))
+            listen_socket.listen()
+            LOG(f"Listening on port {port}...")
+            while True:
+                client_socket, address = listen_socket.accept()
+                # Create a new thread for each client connection
+                client_thread = threading.Thread(
+                    target=handler, args=(client_socket, address)
+                )
+                client_thread.start()
+                LOG(f"Started thread {client_thread.name} for client {address}")
+                         
+
     def delayer_onion(self, message):     
         message = pickle.loads(message)
         message = [self.cipher.decrypt(x) for x in  message]
