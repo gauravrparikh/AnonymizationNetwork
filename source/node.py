@@ -66,20 +66,23 @@ class Node:
                 globals.LOG(f"Received Diffie-Hellman setup message from {address}")
                 public_key_B = self.do_primary_diffie_helman(message) #g^b, diffie helman for me (current node)
                 # return g^b to the client by sending it leftward so that the client can construct g^ab (symmetric key) cuz client has g^a curently
-                self.send_message_with_encryption(self.return_location, [public_key_B.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)])
+                self.send_message(self.return_location, pickle.dumps([public_key_B.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)]))
         else:
         # if this is a Diffie-Helman setup for a future node OR this is a data message 
             # decrypt the message with the symmetric key of the node
             if len(message)>2:
+                globals.LOG("Setting up DH for future node")
+                globals.LOG(f"Message {message}")
                 message = [pickle.loads(self.decrypt_message(x)) for x in message]
-                forward_location,forward_message = message[-1],message[:-2]    
+                # forward_message is a list
+                forward_location, forward_message = message[-1], message[:-2]    
                 # pass on the message to the next node  
-                self.send_message(forward_location, forward_message)
+                self.send_message_with_encryption(forward_location, pickle.dumps(forward_message))
             else:
                 # this is a data message to the exit node , decrypt and send to the origin server.
                 globals.LOG(f"Received message from {address}")
                 globals.LOG(f"Message: {message}")
-                self.send_message(message[1],message[0])
+                self.send_message_with_encryption(message[1],message[0])
                 # pass on the message to the next node
                
 
@@ -90,7 +93,8 @@ class Node:
         
 
     def decrypt_message(self, message):
-        fernet_cipher = Fernet(self.symmetric_key)
+        globals.LOG(f"Symmetric Key: {self.symmetric_key}")
+        fernet_cipher = Fernet(base64.urlsafe_b64encode(self.symmetric_key))
         return fernet_cipher.decrypt(message)
 
         
@@ -131,18 +135,19 @@ class Node:
     
     def send_message(self, destination_location, message):
         """Connect to the neighbor specified by destination and send a message."""
-        globals.LOG(f"Encrypted message: {message}")
+        # globals.LOG(f"Encrypted message: {message}")
         globals.LOG(f'Sending encrypted message to {destination_location}')
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as neighbor_socket:
                 neighbor_socket.connect(destination_location)
                 neighbor_socket.sendall(message)
-                globals.LOG(f"Message: {message}, sent to {destination_location}")
+                # globals.LOG(f"Message: {message}, sent to {destination_location}")
         except socket.error as e:
             globals.LOG(f"Error connecting {e}")
     
     def send_message_with_encryption(self, destination_location, message):
         """Connect to the left neighbor specified by destination and send a message."""
+        # TODO: LAST KNOWN ERROR; TypeError: data must be bytes
         encrypted_message = [self.cipher.encrypt(x) for x in message]
         globals.LOG(f'Sending encrypted message to {destination_location}')
         self.send_message(destination_location, encrypted_message)

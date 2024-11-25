@@ -7,6 +7,8 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.serialization import load_der_public_key,Encoding, PublicFormat, ParameterFormat
 import pickle
 import globals
+import queue
+import base64
 
 class Client:
     def __init__(self, browser_port=globals.BROWSER_PORT, client_right_port=globals.CLIENT_RIGHT_PORT, client_addr="127.0.0.1", ds_addr=globals.DS_ADDR, ds_port=globals.DS_CLIENT_PORT):
@@ -50,12 +52,13 @@ class Client:
             browser_handler_thread.start()
             
             
-    def listen(self, port):
+    def listen_to_node(self, port):
         """
-        Listens for incoming connections on the specified port and handles them using the specified handler.
+        Listens for incoming connections on the specified port.
 
         :param port: The port number to listen on.
-        :param handler: The handler function to call for each accepted connection.
+
+        Returns the socket
         """
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listen_socket:
             listen_socket.bind((self.my_address, port))
@@ -63,14 +66,27 @@ class Client:
             globals.LOG(f"Listening on port {port}...")
             while True:
                 client_socket, address = listen_socket.accept()
-                # Create a new thread for each client connection
-                client_thread = threading.Thread(
-                    target=handler, args=(client_socket, address)
-                )
-                client_thread.start()
-                globals.LOG(f"Started thread {client_thread.name} for client {address}")
-            
-        
+                return (client_socket, address)
+
+    def get_data(self, socket, address,): 
+        '''
+        Get data from a socket and return it to handler
+        '''
+        try:
+            data = b''
+            while True:
+                curr = socket.recv(4096)
+                data += curr
+                if not curr:
+                    globals.LOG(f"Connection with {address} closed.")
+                    break
+        except socket.error as e:
+            globals.LOG(f"Socket error with {address}: {e}")
+        finally:
+            socket.close()
+            return data
+
+
     def handle_browser(self, browser_socket: socket.socket):
         
         directory_socket = self.connect_to_directory_server()
@@ -78,9 +94,7 @@ class Client:
 
         # Each node is of the form: [(node_addr, node_port), public_key]
         entry, middle, exit = self.get_circuit(directory_socket) 
-        
-        threading.Thread(target=self.listen, args=(self.client_right_port)).start()
-        
+
         # Generate symmetric keys with Diffie Hellman
         globals.LOG("Generating symmetric keys with Diffie Hellman")
         entry_symmetric_key = self.exchange_DH_entry_node(entry)
@@ -88,6 +102,7 @@ class Client:
         exit_symmetric_key = self.exchange_DH_exit_node(entry, entry_symmetric_key, middle, middle_symmetric_key, exit)
         
         # Create two threads to relay messages bidirectionally
+
         #browser -> anon network (entry node)
         globals.LOG("Relaying messages bidirectionally")
         browser_to_anon_thread = threading.Thread(target=self.relay_messages_from_browser, 
@@ -199,10 +214,14 @@ class Client:
 
         # Receive B
         # `client_entry_node_socket` is the client's entry node socket (i.e. connection between client and entry node)
-        client_entry_node_socket = self.connect_to_entry_node(entry_node)
-        public_key_B = self.receive_data_from_entry_node(client_entry_node_socket)
-        public_key_B = load_der_public_key(public_key_B)
+        client_entry_node_socket, client_entry_address = self.listen_to_node(self.client_right_port)
+        public_key_B = self.get_data(client_entry_node_socket, client_entry_address)
+        globals.LOG(f"Public Key B: {public_key_B}")
+        public_key_B = pickle.loads(public_key_B)
+        globals.LOG(f"Public Key B after loads: {public_key_B}")
+        public_key_B = load_der_public_key(public_key_B[0])
         globals.LOG("Received public key B from entry node")
+        
         # Construct symmetric key 
         shared_key = private_key_a.exchange(public_key_B)
         derived_key = HKDF(
@@ -230,17 +249,22 @@ class Client:
 
         # parameters is an object. TODO: find out if this object can be sent correctly
         # Send from middle node's left port to entry node's right port
-        message = [public_key_C, globals.IS_CIRCUIT_SETUP, (entry_addr, entry_right_port), parameters] 
-        fernet_cipher = Fernet(entry_symmetric_key)
+        message = [public_key_C.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo), globals.IS_CIRCUIT_SETUP, (entry_addr, entry_right_port), parameters.parameter_bytes(Encoding.DER, ParameterFormat.PKCS3)]
+        message.extend([globals.IS_CIRCUIT_SETUP,(middle_addr, middle_left_port)])
+
+        fernet_cipher = Fernet(base64.urlsafe_b64encode(entry_symmetric_key))
         encrypted_message = [fernet_cipher.encrypt(pickle.dumps(x)) for x in message]
-        encrypted_message.extend([pickle.dumps(globals.IS_CIRCUIT_SETUP), pickle.dumps((middle_addr, middle_left_port))])
-        self.send_message(encrypted_message, (entry_addr, entry_left_port))
+        
+        self.send_message(pickle.dumps(encrypted_message), (entry_addr, entry_left_port))
         globals.LOG("Sent message to middle node")
+        
         # Receive D
         # `client_entry_node_socket` is the client's entry node socket (i.e. connection between client and entry node)
-        client_entry_node_socket = self.connect_to_entry_node(entry_node)
-        public_key_D = self.receive_data_from_middle_via_entry_node(client_entry_node_socket, fernet_cipher)
-        public_key_D = load_der_public_key(public_key_D)
+        client_entry_node_socket, client_entry_address = self.listen_to_node(self.client_right_port)
+        public_key_D = self.get_data(client_entry_node_socket, client_entry_address)
+
+        public_key_D = pickle.loads(public_key_D)
+        public_key_D = load_der_public_key(public_key_D[0])
         globals.LOG("Received public key D from middle node")
         # Construct symmetric key 
         shared_key = private_key_c.exchange(public_key_D)
@@ -262,8 +286,8 @@ class Client:
         public_key_E = private_key_e.public_key()
         globals.LOG("Sending message to exit node")
         # Send E (encrypted with entry_symmetric_key) and parameters
-        fernet_cipher_entry = Fernet(entry_symmetric_key)
-        fernet_cipher_middle = Fernet(middle_symmetric_key)
+        fernet_cipher_entry = Fernet(base64.urlsafe_b64encode(entry_symmetric_key))
+        fernet_cipher_middle = Fernet(base64.urlsafe_b64encode(middle_symmetric_key))
         globals.LOG("Sending message to exit node")
         exit_addr, exit_left_port, exit_right_port = exit_node
         middle_addr, middle_left_port, middle_right_port = middle_node
@@ -309,14 +333,14 @@ class Client:
             entry_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             entry_socket.connect(sending_address)
         except socket.error as e:
-            globals.LOG(f"Error connecting to directory server: {e}")
+            globals.LOG(f"Error connecting to entry node: {e}")
         return entry_socket
 
 
-    def receive_data_from_entry_node(self, entry_socket):
-        data = entry_socket.recv(4096)    # TODO: add a while loop for large amoutns of data, since we are assuming here currently that data is within 4096 bytes 
-        entry_socket.close() 
-        return pickle.loads(data)
+    # def receive_data_from_entry_node(self, entry_socket, entry_address):
+    #     data = self.get_data(entry_socket, entry_address)
+    #     return pickle.loads(data)
+
 
     def receive_data_from_middle_via_entry_node(self, entry_socket, entry_symmetric_cipher):
         """Receives data sent by middle node to entry node"""
@@ -367,9 +391,9 @@ class Client:
    
         
     def layer_onion(self, entry_symmetric_key, middle, middle_symmetric_key, exit, exit_symmetric_key, message, destination_server):
-        cipher1 = Fernet(entry_symmetric_key)
-        cipher2 = Fernet(middle_symmetric_key)
-        cipher3 = Fernet(exit_symmetric_key)
+        cipher1 = Fernet(base64.urlsafe_b64encode(entry_symmetric_key))
+        cipher2 = Fernet(base64.urlsafe_b64encode(middle_symmetric_key))
+        cipher3 = Fernet(base64.urlsafe_b64encode(exit_symmetric_key))
 
         encrypted_message = [message, destination_server]
 
@@ -388,9 +412,9 @@ class Client:
         
     
     def unlayer_onion(self, message, entry_symmetric_key, middle_symmetric_key, exit_symmetric_key):
-        cipher1 = Fernet(entry_symmetric_key)
-        cipher2 = Fernet(middle_symmetric_key)
-        cipher3 = Fernet(exit_symmetric_key)
+        cipher1 = Fernet(base64.urlsafe_b64encode(entry_symmetric_key))
+        cipher2 = Fernet(base64.urlsafe_b64encode(middle_symmetric_key))
+        cipher3 = Fernet(base64.urlsafe_b64encode(exit_symmetric_key))
 
         decrypt_entry_layer = [cipher1.decrypt(x) for x in message]
 
