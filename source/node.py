@@ -5,6 +5,8 @@ from cryptography.hazmat.primitives.asymmetric import dh
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.serialization import load_der_public_key,load_der_parameters,Encoding, PublicFormat, ParameterFormat
+import base64
 import pickle
 import globals
 class Node:
@@ -64,7 +66,7 @@ class Node:
                 globals.LOG(f"Received Diffie-Hellman setup message from {address}")
                 public_key_B = self.do_primary_diffie_helman(message) #g^b, diffie helman for me (current node)
                 # return g^b to the client by sending it leftward so that the client can construct g^ab (symmetric key) cuz client has g^a curently
-                self.send_message_with_encryption(self.return_location, public_key_B)
+                self.send_message_with_encryption(self.return_location, [public_key_B.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)])
         else:
         # if this is a Diffie-Helman setup for a future node OR this is a data message 
             # decrypt the message with the symmetric key of the node
@@ -93,18 +95,19 @@ class Node:
 
         
     def do_primary_diffie_helman(self, message):
-        recd_public_key,self.parameters = message[0],message[-1]
+        self.return_location,recd_public_key,self.parameters = message[-2],load_der_public_key(message[0]),load_der_parameters(message[-1])
+        globals.LOG(f"return location:{self.return_location}")
         private_key = self.parameters.generate_private_key()
         public_key = private_key.public_key() # send to left. B=g^b mod p
         shared_key = private_key.exchange(recd_public_key)
+        globals.LOG(f"Shared key: {shared_key}")
         self.symmetric_key = HKDF(
                     algorithm=hashes.SHA256(),
                     length=32,
                     salt=None,
                     info=b'handshake data',
                 ).derive(shared_key)
-        self.cipher = Fernet(self.symmetric_key)
-        self.return_location=message[-2]
+        self.cipher = Fernet(base64.urlsafe_b64encode(self.symmetric_key))
         return public_key  
         
     def get_data(self, socket, address,): 
@@ -117,10 +120,10 @@ class Node:
                 curr = socket.recv(4096)
                 data += curr
                 if not curr:
-                    print(f"Connection with {address} closed.")
+                    globals.LOG(f"Connection with {address} closed.")
                     break
         except socket.error as e:
-            print(f"Socket error with {address}: {e}")
+            globals.LOG(f"Socket error with {address}: {e}")
         finally:
             socket.close()
             return data
@@ -128,15 +131,18 @@ class Node:
     
     def send_message(self, destination_location, message):
         """Connect to the neighbor specified by destination and send a message."""
+        globals.LOG(f"Encrypted message: {message}")
+        globals.LOG(f'Sending encrypted message to {destination_location}')
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as neighbor_socket:
                 neighbor_socket.connect(destination_location)
                 neighbor_socket.sendall(message)
                 globals.LOG(f"Message: {message}, sent to {destination_location}")
         except socket.error as e:
-            print(f"Error connecting ")
+            globals.LOG(f"Error connecting {e}")
     
     def send_message_with_encryption(self, destination_location, message):
         """Connect to the left neighbor specified by destination and send a message."""
-        encrypted_message = [self.cipher.encrypt(pickle.dumps(x)) for x in message]
-        self.send_message(self, destination_location, encrypted_message)
+        encrypted_message = [self.cipher.encrypt(x) for x in message]
+        globals.LOG(f'Sending encrypted message to {destination_location}')
+        self.send_message(destination_location, encrypted_message)

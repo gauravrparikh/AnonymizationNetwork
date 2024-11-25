@@ -4,11 +4,12 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives.asymmetric import dh
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.serialization import load_der_public_key,Encoding, PublicFormat, ParameterFormat
 import pickle
 import globals
 
 class Client:
-    def __init__(self, browser_port=8889, client_right_port=None, client_addr="127.0.0.1", ds_addr=globals.DS_ADDR, ds_port=globals.DS_CLIENT_PORT):
+    def __init__(self, browser_port=globals.BROWSER_PORT, client_right_port=globals.CLIENT_RIGHT_PORT, client_addr="127.0.0.1", ds_addr=globals.DS_ADDR, ds_port=globals.DS_CLIENT_PORT):
         self.my_address = client_addr
         
         #for hostfile for the website
@@ -37,7 +38,7 @@ class Client:
 
         # Listen for incoming connections
         self.socket_to_browser.listen()
-
+        
         # Accept browser connections and handle them
         while True:
             #listens for and accepts a connection from a client
@@ -47,7 +48,28 @@ class Client:
             browser_handler_thread = threading.Thread(target=self.handle_browser, args=(browser_socket,))
             globals.LOG(f"Started thread {browser_handler_thread.name} for browser {browser_addr}:{browser_port}")
             browser_handler_thread.start()
+            
+            
+    def listen(self, port):
+        """
+        Listens for incoming connections on the specified port and handles them using the specified handler.
 
+        :param port: The port number to listen on.
+        :param handler: The handler function to call for each accepted connection.
+        """
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listen_socket:
+            listen_socket.bind((self.my_address, port))
+            listen_socket.listen()
+            globals.LOG(f"Listening on port {port}...")
+            while True:
+                client_socket, address = listen_socket.accept()
+                # Create a new thread for each client connection
+                client_thread = threading.Thread(
+                    target=handler, args=(client_socket, address)
+                )
+                client_thread.start()
+                globals.LOG(f"Started thread {client_thread.name} for client {address}")
+            
         
     def handle_browser(self, browser_socket: socket.socket):
         
@@ -56,6 +78,8 @@ class Client:
 
         # Each node is of the form: [(node_addr, node_port), public_key]
         entry, middle, exit = self.get_circuit(directory_socket) 
+        
+        threading.Thread(target=self.listen, args=(self.client_right_port)).start()
         
         # Generate symmetric keys with Diffie Hellman
         globals.LOG("Generating symmetric keys with Diffie Hellman")
@@ -168,14 +192,16 @@ class Client:
 
         globals.LOG("Sending message to entry node")
         # construct message as [public_key_A, IS_CIRCUIT_SETUP flag, client_location tuple, parameters]
-        message = [public_key_A, globals.IS_CIRCUIT_SETUP, client_return_address, parameters]
+        message = [public_key_A.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo), globals.IS_CIRCUIT_SETUP, client_return_address, parameters.parameter_bytes(Encoding.DER, ParameterFormat.PKCS3)]
+        globals.LOG(f"Constructed message{message}")
         # Send A and parameters
-        self.send_message(message, entry_sending_address) #TODO: encrypt with TLS
+        self.send_message(pickle.dumps(message), entry_sending_address) #TODO: encrypt with TLS
 
         # Receive B
         # `client_entry_node_socket` is the client's entry node socket (i.e. connection between client and entry node)
         client_entry_node_socket = self.connect_to_entry_node(entry_node)
         public_key_B = self.receive_data_from_entry_node(client_entry_node_socket)
+        public_key_B = load_der_public_key(public_key_B)
         globals.LOG("Received public key B from entry node")
         # Construct symmetric key 
         shared_key = private_key_a.exchange(public_key_B)
@@ -214,6 +240,7 @@ class Client:
         # `client_entry_node_socket` is the client's entry node socket (i.e. connection between client and entry node)
         client_entry_node_socket = self.connect_to_entry_node(entry_node)
         public_key_D = self.receive_data_from_middle_via_entry_node(client_entry_node_socket, fernet_cipher)
+        public_key_D = load_der_public_key(public_key_D)
         globals.LOG("Received public key D from middle node")
         # Construct symmetric key 
         shared_key = private_key_c.exchange(public_key_D)
@@ -261,6 +288,7 @@ class Client:
         # `client_entry_node_socket` is the client's entry node socket (i.e. connection between client and entry node)
         client_entry_node_socket = self.connect_to_entry_node(entry_node)
         public_key_F = self.receive_data_from_exit_via_entry_node(client_entry_node_socket, fernet_cipher_entry, fernet_cipher_middle)
+        public_key_F = load_der_public_key(public_key_F)
         globals.LOG("Received public key F from exit node")
         # Construct symmetric key 
         shared_key = private_key_e.exchange(public_key_F)
@@ -281,7 +309,7 @@ class Client:
             entry_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             entry_socket.connect(sending_address)
         except socket.error as e:
-            print(f"Error connecting to directory server: {e}")
+            globals.LOG(f"Error connecting to directory server: {e}")
         return entry_socket
 
 
@@ -310,7 +338,7 @@ class Client:
             directory_socket.connect((self.ds_addr, self.ds_port))
             directory_socket.sendall(pickle.dumps("Requesting circuit"))
         except socket.error as e:
-            print(f"Error connecting to directory server: {e}")
+            globals.LOG(f"Error connecting to directory server: {e}")
         return directory_socket
 
 
@@ -319,9 +347,9 @@ class Client:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as right_socket:
                 right_socket.connect(destination)
                 right_socket.sendall(message)
-                print(f"Sent message to {destination}")
+                globals.LOG(f"Sent message to {destination}")
         except socket.error as e:
-            print(f"Error connecting ")
+            globals.LOG(f"Error connecting {e}")
 
 
         
