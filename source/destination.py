@@ -15,7 +15,12 @@ class Destination:
        
         self.addr = addr
         self.start()
-  
+        
+    def start(self):
+        """Start the node server to listen for connections on the left port."""
+        #threading.Thread(self.broadcast_to_directory).start()
+
+        threading.Thread(target=self.listen_for_clients).start()
 
   
     def listen_for_clients(self):
@@ -30,11 +35,7 @@ class Destination:
                 )
                 left_thread.start()
                 #print(f"Started thread {left_thread.name} for client {address}")
-    def start(self):
-        """Start the node server to listen for connections on the left port."""
-        #threading.Thread(self.broadcast_to_directory).start()
-    
-        threading.Thread(target=self.listen_for_clients).start()
+   
 
     def handle_left(self, left_socket, address):
         """Handle incoming connections"""

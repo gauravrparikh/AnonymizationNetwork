@@ -5,7 +5,7 @@ from cryptography.hazmat.primitives.asymmetric import dh
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 import pickle
-from globals import IS_CIRCUIT_SETUP
+import globals
 
 class Client:
     def __init__(self, browser_port=8889, client_right_port=None, client_addr="127.0.0.1", ds_addr=globals.DS_ADDR, ds_port=globals.DS_CLIENT_PORT):
@@ -16,13 +16,12 @@ class Client:
         self.socket_to_browser: socket.socket = None
 
         # for getting information back through the circuit, client right port 
-        self.client_right_port = client_right_port
+        self.client_right_port = client_right_port # TODO: this should be in a thread since the client can have many circuits simultaneously
         
         # to connect to the directory server
         self.ds_addr = ds_addr
         self.ds_port = ds_port
-        self.thread = threading.Thread(target=self.start)
-        self.thread.start()
+        threading.Thread(target=self.start).start()
 
     def start(self):
         """Start the tor client
@@ -43,36 +42,43 @@ class Client:
         while True:
             #listens for and accepts a connection from a client
             browser_socket, (browser_addr, browser_port) = self.accept_browser_connection()
-            
+            globals.LOG(f"Connected to browser at {browser_addr}:{browser_port}")
             #spawn a new thread to handle the client
             browser_handler_thread = threading.Thread(target=self.handle_browser, args=(browser_socket,))
+            globals.LOG(f"Started thread {browser_handler_thread.name} for browser {browser_addr}:{browser_port}")
             browser_handler_thread.start()
 
         
     def handle_browser(self, browser_socket: socket.socket):
         
         directory_socket = self.connect_to_directory_server()
+        globals.LOG("Connected to directory server")
 
         # Each node is of the form: [(node_addr, node_port), public_key]
         entry, middle, exit = self.get_circuit(directory_socket) 
         
         # Generate symmetric keys with Diffie Hellman
+        globals.LOG("Generating symmetric keys with Diffie Hellman")
         entry_symmetric_key = self.exchange_DH_entry_node(entry)
         middle_symmetric_key = self.exhange_DH_middle_node(entry, entry_symmetric_key, middle)
         exit_symmetric_key = self.exchange_DH_exit_node(entry, entry_symmetric_key, middle, middle_symmetric_key, exit)
         
         # Create two threads to relay messages bidirectionally
         #browser -> anon network (entry node)
+        globals.LOG("Relaying messages bidirectionally")
         browser_to_anon_thread = threading.Thread(target=self.relay_messages_from_browser, 
                                                   args=(browser_socket, entry, entry_symmetric_key, middle, middle_symmetric_key, exit, exit_symmetric_key,))
         #anon network (entry node) -> browser
+        globals.LOG("Relaying messages bidirectionally")
         anon_to_browser_thread = threading.Thread(target=self.relay_messages_to_browser, args=(browser_socket,entry_symmetric_key, middle_symmetric_key, exit_symmetric_key))
 
         #start the threads
+        globals.LOG("Starting threads")
         browser_to_anon_thread.start()
         anon_to_browser_thread.start()
 
         #wait for the threads to finish (to clean up sockets)
+        globals.LOG("Waiting for threads to finish")
         browser_to_anon_thread.join()
         anon_to_browser_thread.join()
 
@@ -80,21 +86,24 @@ class Client:
         browser_socket.close()
         directory_socket.close()
     
-    def accept_browser_connection(self) -> tuple[socket.socket, tuple[str, int]]:
+    def accept_browser_connection(self):
         """Accept browser connection and return browser socket and address"""
         # block until a browser connects to us.
         # Accepts a browser connection and returns tuple (connection object, addr of browser)
+        globals.LOG("Waiting for browser connection")   
         return self.socket_to_browser.accept()
         
     
     def relay_messages_from_browser(self, browser_socket:socket.socket, entry, entry_symmetric_key, middle, middle_symmetric_key, exit, exit_symmetric_key):
         #returns when the source finishes sending data (empty byte string)
+        globals.LOG("Relaying messages from browser")
         while True:
             data = browser_socket.recv(1024)
+            globals.LOG("Data received from browser", data[:10])
             if not data:
                 break            
             # Encrypt message with symmetric keys
-            message = self.layer_onion( entry_symmetric_key, middle, middle_symmetric_key, exit, exit_symmetric_key, data,("127.0.0.1", globals.DESTINATION_PORT) )
+            message = self.layer_onion( entry_symmetric_key, middle, middle_symmetric_key, exit, exit_symmetric_key, data,(globals.DESTINATION_ADDR, globals.DESTINATION_PORT) )
             # Send message to destination
             self.send_message(pickle.dumps(message), entry[0])
 
@@ -103,10 +112,10 @@ class Client:
     def relay_messages_to_browser(self, browser_socket:socket.socket,entry_symmetric_key, middle_symmetric_key, exit_symmetric_key):
          #Get response from destination
         response = self.get_response_from_destination_server() # the destination server is the "source" here    
-        
+        globals.LOG("Response from destination server", response[:10])
         # Decrypt message with symmetric keys
         self.unlayer_onion(response, entry_symmetric_key, middle_symmetric_key, exit_symmetric_key)
-        
+        globals.LOG("Unlayered response from destination server", response[:10])
         # Send response to browser
         browser_socket.sendall(response)
 
@@ -132,30 +141,34 @@ class Client:
                 curr = right_socket.recv(4096)
                 data += curr
                 if not curr:
-                    print(f"Connection with {address} closed.")
+                    globals.LOG(f"Connection with {address} closed.")
                     break
-            print("Message Received", pickle.loads(data))    
+            globals.LOG("Message Received", pickle.loads(data))    
             return pickle.loads(data)  
         except socket.error as e:
-            print(f"Socket error with {address}: {e}")
+           globals.LOG(f"Socket error with {address}: {e}")
         finally:
             right_socket.close()        
 
     def exchange_DH_entry_node(self, entry_node):
+        globals.LOG("Exchanging Diffie Hellman keys with entry node")
         # Generate parameters (g, p)
         parameters = dh.generate_parameters(generator=2, key_size=2048)
 
         # Generate a and A
+        globals.LOG("Generating private key")
         private_key_a = parameters.generate_private_key()
         public_key_A = private_key_a.public_key()
+        globals.LOG("Generated private key")
         
         entry_addr, entry_left_port, entry_right_port = entry_node
         entry_sending_address = (entry_addr, entry_left_port) #final destination in this function (node 1's left port)
         
         client_return_address = (self.my_address, self.client_right_port) # forward back to ourselves (entry node's right port)
 
+        globals.LOG("Sending message to entry node")
         # construct message as [public_key_A, IS_CIRCUIT_SETUP flag, client_location tuple, parameters]
-        message = [public_key_A, IS_CIRCUIT_SETUP, client_return_address, parameters]
+        message = [public_key_A, globals.IS_CIRCUIT_SETUP, client_return_address, parameters]
         # Send A and parameters
         self.send_message(message, entry_sending_address) #TODO: encrypt with TLS
 
@@ -163,7 +176,7 @@ class Client:
         # `client_entry_node_socket` is the client's entry node socket (i.e. connection between client and entry node)
         client_entry_node_socket = self.connect_to_entry_node(entry_node)
         public_key_B = self.receive_data_from_entry_node(client_entry_node_socket)
-
+        globals.LOG("Received public key B from entry node")
         # Construct symmetric key 
         shared_key = private_key_a.exchange(public_key_B)
         derived_key = HKDF(
@@ -172,12 +185,13 @@ class Client:
             salt=None,
             info=b'handshake data',
         ).derive(shared_key)
-
+        globals.LOG("Derived symmetric key")
         return derived_key
 
     def exhange_DH_middle_node(self, entry_node, entry_symmetric_key, middle_node):
         # Generate parameters (g, p)
         parameters = dh.generate_parameters(generator=2, key_size=2048)
+        globals.LOG("Exchanging Diffie Hellman keys with middle node")
 
         # Generate c and C
         private_key_c = parameters.generate_private_key()
@@ -186,20 +200,21 @@ class Client:
         # Send C (encrypted with entry_symmetric_key) and parameters
         entry_addr, entry_left_port, entry_right_port = entry_node
         middle_addr, middle_left_port, middle_right_port = middle_node
+        globals.LOG("Sending message to middle node")
 
         # parameters is an object. TODO: find out if this object can be sent correctly
         # Send from middle node's left port to entry node's right port
-        message = [public_key_C, IS_CIRCUIT_SETUP, (entry_addr, entry_right_port), parameters] 
+        message = [public_key_C, globals.IS_CIRCUIT_SETUP, (entry_addr, entry_right_port), parameters] 
         fernet_cipher = Fernet(entry_symmetric_key)
         encrypted_message = [fernet_cipher.encrypt(pickle.dumps(x)) for x in message]
-        encrypted_message.extend([pickle.dumps(IS_CIRCUIT_SETUP), pickle.dumps((middle_addr, middle_left_port))])
+        encrypted_message.extend([pickle.dumps(globals.IS_CIRCUIT_SETUP), pickle.dumps((middle_addr, middle_left_port))])
         self.send_message(encrypted_message, (entry_addr, entry_left_port))
-
+        globals.LOG("Sent message to middle node")
         # Receive D
         # `client_entry_node_socket` is the client's entry node socket (i.e. connection between client and entry node)
         client_entry_node_socket = self.connect_to_entry_node(entry_node)
         public_key_D = self.receive_data_from_middle_via_entry_node(client_entry_node_socket, fernet_cipher)
-
+        globals.LOG("Received public key D from middle node")
         # Construct symmetric key 
         shared_key = private_key_c.exchange(public_key_D)
         derived_key = HKDF(
@@ -208,45 +223,45 @@ class Client:
             salt=None,
             info=b'handshake data',
         ).derive(shared_key)
-
+        globals.LOG("Derived symmetric key")
         return derived_key
 
     def exchange_DH_exit_node(self, entry_node, entry_symmetric_key, middle_node, middle_symmetric_key, exit_node):
         # generate parameters (g, p)
         parameters = dh.generate_parameters(generator=2, key_size=2048)
-
+        globals.LOG("Exchanging Diffie Hellman keys with exit node")
         # Generate e and E
         private_key_e = parameters.generate_private_key()
         public_key_E = private_key_e.public_key()
-
+        globals.LOG("Sending message to exit node")
         # Send E (encrypted with entry_symmetric_key) and parameters
         fernet_cipher_entry = Fernet(entry_symmetric_key)
         fernet_cipher_middle = Fernet(middle_symmetric_key)
-
+        globals.LOG("Sending message to exit node")
         exit_addr, exit_left_port, exit_right_port = exit_node
         middle_addr, middle_left_port, middle_right_port = middle_node
         entry_addr, entry_left_port, entry_right_port = entry_node
 
         #[public_key_E, IS_CIRCUIT_SETUP, middle_return_address, parameters]; Return to middle node's right port
-        encrypted_message = [public_key_E, IS_CIRCUIT_SETUP, (middle_addr, middle_right_port), parameters]
-
+        encrypted_message = [public_key_E, globals.IS_CIRCUIT_SETUP, (middle_addr, middle_right_port), parameters]
+        globals.LOG("Sending message to exit node")
         #[middle_key(public_key_E), middle_key(IS_CIRCUIT_SETUP), middle_key(exit_node_addr), middle_key(parameters)]
         # This is an intermediary message 
         encrypted_message = [fernet_cipher_middle.encrypt(pickle.dumps(x)) for x in encrypted_message] 
 
         #[middle_key(public_key_E), middle_key(IS_CIRCUIT_SETUP), middle_key(exit_node_addr),middle_key(parameters),IS_CIRCUIT_SETUP, middle_node_addr]
-        encrypted_message.extend([pickle.dumps(IS_CIRCUIT_SETUP), pickle.dumps((middle_addr, middle_left_port))]) 
-
+        encrypted_message.extend([pickle.dumps(globals.IS_CIRCUIT_SETUP), pickle.dumps((middle_addr, middle_left_port))]) 
+        globals.LOG("Sending message to exit node")
         #[entry_key(middle_key(public_key_E)), entry_key(middle_key(IS_CIRCUIT_SETUP)), entry_key(middle_key(exit_node_addr)), entry_key(IS_CIRCUIT_SETUP), entry_key(middle_node_addr)]
         encrypted_message = [fernet_cipher_entry.encrypt(pickle.dumps(x)) for x in encrypted_message]
 
         self.send_message(encrypted_message, (entry_addr, entry_left_port))
-
+        globals.LOG("Sent message to exit node")    
         # Receive F
         # `client_entry_node_socket` is the client's entry node socket (i.e. connection between client and entry node)
         client_entry_node_socket = self.connect_to_entry_node(entry_node)
         public_key_F = self.receive_data_from_exit_via_entry_node(client_entry_node_socket, fernet_cipher_entry, fernet_cipher_middle)
-
+        globals.LOG("Received public key F from exit node")
         # Construct symmetric key 
         shared_key = private_key_e.exchange(public_key_F)
         derived_key = HKDF(
@@ -255,7 +270,7 @@ class Client:
             salt=None,
             info=b'handshake data',
         ).derive(shared_key)
-
+        globals.LOG("Derived symmetric key")
         return derived_key
     
     def connect_to_entry_node(self, entry_node):
