@@ -56,43 +56,81 @@ class Node:
                 )
                 client_thread.start()
                 globals.LOG(f"Started thread {client_thread.name} for client {address}")
-                         
+            
 
     def handle_left(self, left_socket, address):
         """Handle connections coming to my left port"""
-        left_data=self.get_data(left_socket, address) # get the data from left
+        globals.LOG("Handling incoming data from left")
+        left_data = self.get_data(left_socket, address) # get the data from left
         message = pickle.loads(left_data) # unpickle data so we can analyse it + decide what to do; unpickling it makes it a list of things that have been encrypt(pickle(item)) or pickle(item)
         
-        try:
-            if (globals.IS_CIRCUIT_SETUP == pickle.loads(message[-2])):
-                # if this is a Diffie-Helman setup for current node
-                globals.LOG("Is a circuit setup process")
-                if (len(message)==4):
-                    message = [pickle.loads(x) for x in message]
-                    globals.LOG(f"Received Diffie-Hellman setup message from {address}")
-                    public_key_B = self.do_primary_diffie_helman(message) #g^b, diffie helman for me (current node)
-                    # return g^b to the client by sending it leftward so that the client can construct g^ab (symmetric key) cuz client has g^a curently
-                    self.send_message(self.return_location, pickle.dumps([public_key_B.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)]))
-        except Exception as e:
-        # if this is a Diffie-Helman setup for a future node OR this is a data message 
-            # decrypt the message with the symmetric key of the node and pass on the remaining to the right
-            if len(message)>2:
-                globals.LOG("Setting up DH for future node")
-                # globals.LOG(f"Message {message}")
-                message = [pickle.loads(self.decrypt_message(x)) for x in message]
-                # forward_message is a list
-                forward_location, forward_message = message[-1], message[:-2]    
-                # pass on the message to the next node  
-                globals.LOG(f"Forward message {forward_message}")
+        is_nested = any(isinstance(item, list) for item in message)
+        print("HMM", message)
 
+        if is_nested:   # Decryption necessary
+            # This is not the final node, keep passing it on
+            inner_message, outer_message = message
+            outer_message = [pickle.loads(self.decrypt_message(x)) for x in outer_message]
+            inner_message = [pickle.loads(self.decrypt_message(x)) for x in inner_message]
+
+            print("OUTER ", outer_message)
+            print("INNER ", inner_message)
+
+            if (outer_message[0] == globals.IS_CIRCUIT_SETUP):
+                globals.LOG("Setting up Diffie-Hellman for future node")
+                message = [pickle.loads(self.decrypt_message(y)) for x in message for y in x]
+                forward_location, forward_message = outer_message[1], inner_message    
+                
                 forward_message = [pickle.dumps(x) for x in forward_message]
-                self.send_message_with_encryption(forward_location, forward_message)
-            else:
-                # this is a data message to the exit node, decrypt and send to the origin server.
-                globals.LOG(f"Received message from {address}")
-                globals.LOG(f"Message: {message}")
-                self.send_message_with_encryption(message[1],message[0])
-                # pass on the message to the next node
+                self.send_message(forward_location, pickle.dumps(forward_message))
+            else: 
+                globals.LOG(f"Received data message from {address}")
+                self.send_message_with_encryption(outer_message[1], inner_message)
+
+        else:   # This is the final node in the sending process; Decryption not necessary
+            # Assign individual values in message
+            unpickled_message = [pickle.loads(x) for x in message]
+            client_public_key, parameters, circuit_flag, client_return_address = unpickled_message
+
+            if (circuit_flag == globals.IS_CIRCUIT_SETUP):
+                # Do Diffie-Hellman for current node
+                globals.LOG("Is a circuit setup process; doing Diffie-Hellman")
+                print("doing DH ", unpickled_message)
+                public_key_B = self.do_primary_diffie_hellman(unpickled_message)
+                print("Key size:", public_key_B.key_size)
+                self.send_message(self.return_location, pickle.dumps([public_key_B.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)]))
+                # TODO: THE KEY BEING SENT BACK IS NOT GETTING RECOGNIZED?? IDK WHY
+
+        # try:
+        #     if (globals.IS_CIRCUIT_SETUP == pickle.loads(message[-2])):
+        #         # if this is a Diffie-Helman setup for current node
+        #         globals.LOG("Is a circuit setup process")
+        #         if (len(message)==4):
+        #             message = [pickle.loads(x) for x in message]
+        #             globals.LOG(f"Received Diffie-Hellman setup message from {address}")
+        #             public_key_B = self.do_primary_diffie_helman(message) #g^b, diffie helman for me (current node)
+        #             # return g^b to the client by sending it leftward so that the client can construct g^ab (symmetric key) cuz client has g^a curently
+        #             self.send_message(self.return_location, pickle.dumps([public_key_B.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)]))
+        # except Exception as e:
+        # # if this is a Diffie-Helman setup for a future node OR this is a data message 
+        #     # decrypt the message with the symmetric key of the node and pass on the remaining to the right
+        #     if len(message)>2:
+        #         globals.LOG("Setting up DH for future node")
+        #         # globals.LOG(f"Message {message}")
+        #         message = [pickle.loads(self.decrypt_message(x)) for x in message]
+        #         # forward_message is a list
+        #         forward_location, forward_message = message[-1], message[:-2]    
+        #         # pass on the message to the next node  
+        #         globals.LOG(f"Forward message {forward_message}")
+
+        #         forward_message = [pickle.dumps(x) for x in forward_message]
+        #         self.send_message_with_encryption(forward_location, forward_message)
+        #     else:
+        #         # this is a data message to the exit node, decrypt and send to the origin server.
+        #         globals.LOG(f"Received message from {address}")
+        #         globals.LOG(f"Message: {message}")
+        #         self.send_message_with_encryption(message[1],message[0])
+        #         # pass on the message to the next node
                
 
     def handle_right(self, right_socket, address):
@@ -109,8 +147,8 @@ class Node:
         return fernet_cipher.decrypt(message)
 
         
-    def do_primary_diffie_helman(self, message):
-        self.return_location, recd_public_key,self.parameters = message[-1], load_der_public_key(message[0]), load_der_parameters(message[1])
+    def do_primary_diffie_hellman(self, message):
+        self.return_location, recd_public_key, self.parameters = message[-1], load_der_public_key(message[0]), load_der_parameters(message[1])
         globals.LOG(f"return location:{self.return_location}")
         private_key = self.parameters.generate_private_key()
         public_key = private_key.public_key() # send to left. B=g^b mod p
