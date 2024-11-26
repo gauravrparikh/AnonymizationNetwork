@@ -3,7 +3,6 @@ import socket
 import threading
 from directory_server import DirectoryServer
 from client import Client
-from destination import Destination
 import globals
 
 # Main function
