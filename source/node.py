@@ -62,17 +62,18 @@ class Node:
         """Handle connections coming to my left port"""
         left_data=self.get_data(left_socket, address) # get the data from left
         message = pickle.loads(left_data) # unpickle data so we can analyse it + decide what to do; unpickling it makes it a list of things that have been encrypt(pickle(item)) or pickle(item)
-        globals.LOG(f"Is a circuit setup? {pickle.loads(message[-2])}")
-        if (globals.IS_CIRCUIT_SETUP == pickle.loads(message[-2])):
-            # if this is a Diffie-Helman setup for current node
-            globals.LOG("Is a circuit setup process")
-            if (len(message)==4):
-                message = [pickle.loads(x) for x in message]
-                globals.LOG(f"Received Diffie-Hellman setup message from {address}")
-                public_key_B = self.do_primary_diffie_helman(message) #g^b, diffie helman for me (current node)
-                # return g^b to the client by sending it leftward so that the client can construct g^ab (symmetric key) cuz client has g^a curently
-                self.send_message(self.return_location, pickle.dumps([public_key_B.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)]))
-        else:
+        
+        try:
+            if (globals.IS_CIRCUIT_SETUP == pickle.loads(message[-2])):
+                # if this is a Diffie-Helman setup for current node
+                globals.LOG("Is a circuit setup process")
+                if (len(message)==4):
+                    message = [pickle.loads(x) for x in message]
+                    globals.LOG(f"Received Diffie-Hellman setup message from {address}")
+                    public_key_B = self.do_primary_diffie_helman(message) #g^b, diffie helman for me (current node)
+                    # return g^b to the client by sending it leftward so that the client can construct g^ab (symmetric key) cuz client has g^a curently
+                    self.send_message(self.return_location, pickle.dumps([public_key_B.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)]))
+        except Exception as e:
         # if this is a Diffie-Helman setup for a future node OR this is a data message 
             # decrypt the message with the symmetric key of the node and pass on the remaining to the right
             if len(message)>2:
