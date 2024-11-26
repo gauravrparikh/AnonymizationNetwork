@@ -207,7 +207,8 @@ class Client:
 
         globals.LOG("Sending message to entry node")
         # construct message as [public_key_A, IS_CIRCUIT_SETUP flag, client_location tuple, parameters]
-        message = [public_key_A.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo), globals.IS_CIRCUIT_SETUP, client_return_address, parameters.parameter_bytes(Encoding.DER, ParameterFormat.PKCS3)]
+        message = [public_key_A.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo), parameters.parameter_bytes(Encoding.DER, ParameterFormat.PKCS3), globals.IS_CIRCUIT_SETUP, client_return_address]
+        message = [pickle.dumps(x) for x in message]
         globals.LOG(f"Constructed message{message}")
         # Send A and parameters
         self.send_message(pickle.dumps(message), entry_sending_address) #TODO: encrypt with TLS
@@ -216,9 +217,9 @@ class Client:
         # `client_entry_node_socket` is the client's entry node socket (i.e. connection between client and entry node)
         client_entry_node_socket, client_entry_address = self.listen_to_node(self.client_right_port)
         public_key_B = self.get_data(client_entry_node_socket, client_entry_address)
-        globals.LOG(f"Public Key B: {public_key_B}")
+        # globals.LOG(f"Public Key B: {public_key_B}")
         public_key_B = pickle.loads(public_key_B)
-        globals.LOG(f"Public Key B after loads: {public_key_B}")
+        # globals.LOG(f"Public Key B after loads: {public_key_B}")
         public_key_B = load_der_public_key(public_key_B[0])
         globals.LOG("Received public key B from entry node")
         
@@ -249,7 +250,7 @@ class Client:
 
         # parameters is an object. TODO: find out if this object can be sent correctly
         # Send from middle node's left port to entry node's right port
-        message = [public_key_C.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo), globals.IS_CIRCUIT_SETUP, (entry_addr, entry_right_port), parameters.parameter_bytes(Encoding.DER, ParameterFormat.PKCS3)]
+        message = [public_key_C.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo), parameters.parameter_bytes(Encoding.DER, ParameterFormat.PKCS3), globals.IS_CIRCUIT_SETUP, (entry_addr, entry_right_port)]
         message.extend([globals.IS_CIRCUIT_SETUP,(middle_addr, middle_left_port)])
 
         fernet_cipher = Fernet(base64.urlsafe_b64encode(entry_symmetric_key))
@@ -294,7 +295,7 @@ class Client:
         entry_addr, entry_left_port, entry_right_port = entry_node
 
         #[public_key_E, IS_CIRCUIT_SETUP, middle_return_address, parameters]; Return to middle node's right port
-        encrypted_message = [public_key_E, globals.IS_CIRCUIT_SETUP, (middle_addr, middle_right_port), parameters]
+        encrypted_message = [public_key_E, parameters, globals.IS_CIRCUIT_SETUP, (middle_addr, middle_right_port)]
         globals.LOG("Sending message to exit node")
         #[middle_key(public_key_E), middle_key(IS_CIRCUIT_SETUP), middle_key(exit_node_addr), middle_key(parameters)]
         # This is an intermediary message 
@@ -342,11 +343,11 @@ class Client:
     #     return pickle.loads(data)
 
 
-    def receive_data_from_middle_via_entry_node(self, entry_socket, entry_symmetric_cipher):
-        """Receives data sent by middle node to entry node"""
-        data = entry_socket.recv(4096)
-        entry_socket.close() 
-        return entry_symmetric_cipher.decrypt(pickle.loads(data))
+    # def receive_data_from_middle_via_entry_node(self, entry_socket, entry_symmetric_cipher):
+    #     """Receives data sent by middle node to entry node"""
+    #     data = entry_socket.recv(4096)
+    #     entry_socket.close() 
+    #     return entry_symmetric_cipher.decrypt(pickle.loads(data))
 
     def receive_data_from_exit_via_entry_node(self, entry_socket, entry_symmetric_cipher, middle_symmetric_cipher):
         """Receives data sent by exit node to entry node"""
@@ -395,16 +396,25 @@ class Client:
         cipher2 = Fernet(base64.urlsafe_b64encode(middle_symmetric_key))
         cipher3 = Fernet(base64.urlsafe_b64encode(exit_symmetric_key))
 
+        # message = [GET request, 152.3....]
         encrypted_message = [message, destination_server]
+        
+        # encrypted_message = [[encrypt(pickled(GET request)), encrypt(pickled(152.3...))]]
+        encrypted_message = [[cipher3.encrypt(pickle.dumps(x)) for x in encrypted_message]]
 
-        encrypted_message = [cipher3.encrypt(pickle.dumps(x)) for x in encrypted_message]
+        # encrypted_message = [[encrypt(pickled(GET request)), encrypt(pickled(152.3...))], pickle(exit's addr, exit's left port)]
+        exit_left_addr = (exit[0], exit[1])
+        encrypted_message.append(pickle.dumps(exit_left_addr))
 
-        encrypted_message.append(pickle.dumps(exit[0]))
+        # encrypted_message = [[[encrypt w/ cipher 2 ([encrypt(pickled(GET request)), encrypt(pickled(152.3...))]), encrypt w/ cipher 2(pickle(exit's addr, exit's left port))]]
+        # encrypted_message = [[[X], Y]]
+        encrypted_message = [[cipher2.encrypt(x) for x in encrypted_message]]
 
-        encrypted_message = [cipher2.encrypt(x) for x in encrypted_message]
+        # encrypted_message = [[[X], Y], pickle(middle address, middle left port)]
+        middle_left_addr = (middle[0], middle[1])
+        encrypted_message.append(pickle.dumps(middle_left_addr))
 
-        encrypted_message.append(pickle.dumps(middle[0]))
-        # Third encryption
+        # encrypted_message = [encrypt([[X], Y]), encrypt(pickle(middle address, middle left port))]
         encrypted_message = [cipher1.encrypt(x) for x in encrypted_message]
         
         ## send this to entry node. 
@@ -417,9 +427,8 @@ class Client:
         cipher3 = Fernet(base64.urlsafe_b64encode(exit_symmetric_key))
 
         decrypt_entry_layer = [cipher1.decrypt(x) for x in message]
-
         decrypt_middle_layer = [cipher2.decrypt(x) for x in decrypt_entry_layer[0]]
-
         decrypt_exit_layer = [cipher3.decrypt(x) for x in decrypt_middle_layer[0]]
+
         decrypted_message = pickle.loads(decrypt_exit_layer[0])
         return decrypted_message
