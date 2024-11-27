@@ -9,6 +9,7 @@ import pickle
 import globals
 import queue
 import base64
+from .message import Message
 
 class Client:
     def __init__(self, browser_port=globals.BROWSER_PORT, client_right_port=globals.CLIENT_RIGHT_PORT, client_addr="127.0.0.1", ds_addr=globals.DS_ADDR, ds_port=globals.DS_CLIENT_PORT):
@@ -215,17 +216,15 @@ class Client:
         client_return_address = (self.my_address, self.client_right_port) # forward back to ourselves (entry node's right port sends to client's right port)
 
         # Send parameters and public key; pickle every element in message, then pickle the entire list itself
-        message = [public_key_A.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo), parameters.parameter_bytes(Encoding.DER, ParameterFormat.PKCS3), client_return_address, entry_left_address]
-        message = [pickle.dumps(x) for x in message]
-        self.send_message(pickle.dumps(message), entry_left_address) #TODO: encrypt with TLS
-        globals.LOG("Sent message to entry node")
+        DH_setup_payload=[public_key_A.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo), parameters.parameter_bytes(Encoding.DER, ParameterFormat.PKCS3)] # [key, param]
+        message = pickle.dumps(Message(DH_setup_payload, client_return_address, "setup_message"))
+        self.send_message(message, entry_left_address) #TODO: encrypt with TLS
+        globals.LOG("Sent message from client's right to entry node's left")
 
         # Receive entry node's public key (i.e. B)
         client_entry_node_socket, client_entry_address = self.listen_to_node(self.client_right_port)
-        public_key_B = self.get_data(client_entry_node_socket, client_entry_address)
-        public_key_B = pickle.loads(public_key_B)
-        globals.LOG(f"Unloaded: {public_key_B}")
-        public_key_B = [pickle.loads(x) for x in public_key_B]
+        public_key_B =  pickle.loads(self.get_data(client_entry_node_socket, client_entry_address)).get_payload()
+
         globals.LOG(f"Next {public_key_B[0]}")
         public_key_B = load_der_public_key(public_key_B[0])
         globals.LOG("Received public key B from entry node")
@@ -260,21 +259,25 @@ class Client:
         client_right_address = (self.my_address, self.client_right_port)
 
         # Send parameters and public key from entry node's right port to middle node's left port; 
-        # Encrypt the message being sent from entry to middle. Ensure to pickle each element then encrypt the entire list
-        inner_message = [public_key_C.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo), parameters.parameter_bytes(Encoding.DER, ParameterFormat.PKCS3), entry_right_address, middle_left_address]
-        outer_message = [client_right_address, entry_left_address]
+        
+        # Construct message for entry node to send to middle node. This message will be sent unencrypted along the entry to middle channel [key, param]
+        DH_setup_payload=[public_key_C.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo), parameters.parameter_bytes(Encoding.DER, ParameterFormat.PKCS3)]
+        diffie_hellman_message = Message(DH_setup_payload,entry_right_address, "setup_message")
+        
+        # Construct message for client to send to entry node to forward the diffie hellman message to the middle node.
+        message = Message(diffie_hellman_message,middle_left_address,"forward_message")
+        
         cipher = Fernet(base64.urlsafe_b64encode(entry_symmetric_key))
-        encrypted_message = [[cipher.encrypt(pickle.dumps(x)) for x in inner_message], [cipher.encrypt(pickle.dumps(x)) for x in outer_message]]
+        encrypted_message = cipher.encrypt(pickle.dumps(message))
 
         self.send_message(pickle.dumps(encrypted_message), entry_left_address)
-        globals.LOG("Sent message to middle node")
+        globals.LOG("Sent message to entry node with packaged message for middle node.")
         
         # Receive middle node's public key
         client_entry_node_socket, client_entry_address = self.listen_to_node(self.client_right_port)
-        public_key_D = self.get_data(client_entry_node_socket, client_entry_address)
-        public_key_D = pickle.loads(public_key_D)
-        public_key_D = [cipher.decrypt(x) for x in public_key_D]
-        public_key_D = [pickle.loads(x) for x in public_key_D]
+        encrypted_public_key_D = pickle.loads(self.get_data(client_entry_node_socket, client_entry_address))
+        
+        public_key_D=
 
         globals.LOG("Received public key D from middle node")
 
@@ -310,24 +313,25 @@ class Client:
         middle_left_address = (middle_addr, middle_left_port)
         entry_left_address = (entry_addr, entry_left_port)
         client_return_address = (self.my_address, self.client_right_port)
-
-        # Send E (encrypted with entry_symmetric_key) and parameters
-        inner_message = [public_key_E, parameters, middle_right_address, exit_left_address]
-        center_message = [entry_right_address, middle_left_address]
-        outer_message = [client_return_address, entry_left_address]
-
-        # Encrypt with middle's key
-        cipher = Fernet(base64.urlsafe_b64encode(middle_symmetric_key)) # ep(x) = encrypt(pickle(x))
-        encrypted_message = [[cipher.encrypt(pickle.dumps(x)) for x in inner_message]] # [[ep(key), ep(param), ep(return addr), ep(send addr)]]
-        additional_info = center_message # [return addr, send addr]
-        message_with_additional = encrypted_message.append(additional_info) # [[ep(key), ep(param), ep(return addr), ep(send addr)], [return addr, send addr]]
-
-        cipher = Fernet(base64.urlsafe_b64encode(entry_symmetric_key))
-        encrypted_message = [cipher.encrypt(pickle.dumps(x)) for x in message_with_additional] # [ep([ep(key), ep(param), ep(return addr), ep(send addr)]), ep([return addr, send addr])]
-
-        self.send_message(encrypted_message, entry_left_address)
-        globals.LOG("Sent message to entry node with intent of sending to exit")    
         
+        
+        # Construct message for middle node to send to exit node. This message will be sent unencrypted along the middle to exit channel [key, param]
+        DH_setup_payload = [public_key_E.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo), parameters.parameter_bytes(Encoding.DER, ParameterFormat.PKCS3)]
+        diffie_hellman_message = Message(DH_setup_payload, middle_right_address, "setup_message")
+        
+        # Construct message for entry node to send to middle node (for the middle node to forward to the exit node)
+        message = Message(diffie_hellman_message,exit_left_address,"forward_message")
+        cipher = Fernet(base64.urlsafe_b64encode(middle_symmetric_key))
+        encrypted_message_for_middle = cipher.encrypt(pickle.dumps(message))
+        
+        # Construct message for client to send to entry node. 
+        message = Message(encrypted_message_for_middle,middle_left_address,"forward_message")
+        cipher = Fernet(base64.urlsafe_b64encode(entry_symmetric_key))
+        encrypted_message = cipher.encrypt(pickle.dumps(message))
+
+        self.send_message(pickle.dumps(encrypted_message), entry_left_address)
+        globals.LOG("Sent message to entry node with packaged message for middle node.")
+
         # Receive F
         client_entry_node_socket, client_entry_address = self.listen_to_node(self.client_right_port)
         public_key_F = self.get_data(client_entry_node_socket, client_entry_address)
@@ -402,33 +406,22 @@ class Client:
         
     
     def layer_onion(self, entry_symmetric_key, middle, middle_symmetric_key, exit, exit_symmetric_key, message, destination_server):
+        
+        # Constructing ciphers
         cipher1 = Fernet(base64.urlsafe_b64encode(entry_symmetric_key))
         cipher2 = Fernet(base64.urlsafe_b64encode(middle_symmetric_key))
         cipher3 = Fernet(base64.urlsafe_b64encode(exit_symmetric_key))
-
-        # message = [GET request, 152.3....]
-        encrypted_message = [message, destination_server]
         
-        # encrypted_message = [[encrypt(pickled(GET request)), encrypt(pickled(152.3...))]]
-        encrypted_message = [[cipher3.encrypt(pickle.dumps(x)) for x in encrypted_message]]
-
-        # encrypted_message = [[encrypt(pickled(GET request)), encrypt(pickled(152.3...))], pickle(exit's addr, exit's left port)]
+        # Constructing forward addresses
         exit_left_addr = (exit[0], exit[1])
-        encrypted_message.append(pickle.dumps(exit_left_addr))
-
-        # encrypted_message = [[[encrypt w/ cipher 2 ([encrypt(pickled(GET request)), encrypt(pickled(152.3...))]), encrypt w/ cipher 2(pickle(exit's addr, exit's left port))]]
-        # encrypted_message = [[[X], Y]]
-        encrypted_message = [[cipher2.encrypt(x) for x in encrypted_message]]
-
-        # encrypted_message = [[[X], Y], pickle(middle address, middle left port)]
         middle_left_addr = (middle[0], middle[1])
-        encrypted_message.append(pickle.dumps(middle_left_addr))
-
-        # encrypted_message = [encrypt([[X], Y]), encrypt(pickle(middle address, middle left port))]
-        encrypted_message = [cipher1.encrypt(x) for x in encrypted_message]
-        
+                
+        # encrypted_message with cipher 3 for the middle to exit channel 
+        message_exit_understands = cipher3.encrypt(pickle.dumps(Message(message, destination_server, "forward_message")))
+        message_middle_understands = cipher2.encrypt(pickle.dumps(Message(message_exit_understands, exit_left_addr, "forward_message")))  
+        message_entry_understands = cipher1.encrypt(pickle.dumps(Message(message_middle_understands, middle_left_addr, "forward_message"))) 
         ## send this to entry node. 
-        return encrypted_message
+        return pickle.dumps(message_entry_understands)
         
     
     def unlayer_onion(self, message, entry_symmetric_key, middle_symmetric_key, exit_symmetric_key):
