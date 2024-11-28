@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives.serialization import load_der_public_key,loa
 import base64
 import pickle
 import globals
-from .message import Message
+from message import Message
 class Node:
     def __init__(self, left_port,  right_port, directory_server_port, addr="127.0.0.1", directory_server_addr = globals.DS_ADDR):
         self.my_left_port = left_port
@@ -82,9 +82,13 @@ class Node:
         else:
         # if this is a Diffie-Helman setup for a future node OR this is a data message 
             # decrypt the message with the symmetric key of the current node and pass on the remaining to the right
-            message = self.loads(self.cipher.decrypt(message))
+            globals.LOG("Forwarding message to the right")
+            message = pickle.loads(self.cipher.decrypt(message))
             payload_message=message.get_payload()
-            assert isinstance(payload_message, Message) # Forward the message to the right. 
+            try:
+                assert isinstance(payload_message, Message) # Forward the message to the right. 
+            except AssertionError:
+                globals.LOG(payload_message)
             forward_location, forward_message = message.get_forward_to(), pickle.dumps(payload_message)
             self.send_message(forward_location, forward_message)
           
@@ -95,9 +99,7 @@ class Node:
         """Handle connections coming to my right port"""
         globals.LOG("Handling right")
         right_data=self.get_data(right_socket, address) # get the data from right
-        message = pickle.loads(right_data)
-        globals.LOG(f"Message @ right {message}")
-        self.send_message_with_encryption(self.return_location, message) # send the message to the left
+        self.send_message_with_encryption(self.return_location, right_data) # send the message to the left
         
 
         

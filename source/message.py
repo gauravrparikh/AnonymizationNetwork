@@ -1,4 +1,3 @@
-import pickle
 class Message:
     """
     Class to construct messages to pass over sockets. 
