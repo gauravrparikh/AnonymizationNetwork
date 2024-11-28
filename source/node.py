@@ -95,6 +95,7 @@ class Node:
                 globals.LOG(payload_message)
             if message_type == MessageType.SERVER:
                 forward_location, forward_message = message.get_forward_to(), payload_message
+                globals.LOG(f"############## Relaying message to web server ##############,{forward_message}")
             else:     
                 forward_location, forward_message = message.get_forward_to(), pickle.dumps(payload_message)
             self.send_message(forward_location, forward_message)
