@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives.serialization import load_der_public_key,loa
 import base64
 import pickle
 import globals
-from message import Message
+from message import Message, MessageType
 class Node:
     def __init__(self, left_port,  right_port, directory_server_port, addr="127.0.0.1", directory_server_addr = globals.DS_ADDR):
         self.my_left_port = left_port
@@ -65,7 +65,7 @@ class Node:
         left_data = self.get_data(left_socket, address) # get the data from left
         message = pickle.loads(left_data) # unpickle data so we can analyse it + decide what to do; unpickling it makes it a Message Object
         if (self.cipher is None ):
-            if (message.get_type() == "setup_message"):
+            if (message.get_type() == MessageType.SETUP):
                 # if this is a Diffie-Helman setup for current node
                 globals.LOG("Circuit setup process for current node")
                 DH_message = message.get_payload()
@@ -76,7 +76,7 @@ class Node:
                 # return g^b to the client by sending it leftward so that the client can construct g^ab (symmetric key) cuz client has g^a curently
             
                 DH_return_payload=[public_key_B.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)] # [key_B]
-                message = pickle.dumps(Message(DH_return_payload, None, "return_message")) # Construct a return message with the payload being a list. 
+                message = pickle.dumps(Message(DH_return_payload, None, MessageType.RETURN)) # Construct a return message with the payload being a list. 
                 self.send_message(self.return_location, message)
 
         else:
@@ -85,11 +85,18 @@ class Node:
             globals.LOG("Forwarding message to the right")
             message = pickle.loads(self.cipher.decrypt(message))
             payload_message=message.get_payload()
+            message_type = message.get_type()
+            globals.LOG(f"Message type: {message_type}")            
             try:
                 assert isinstance(payload_message, Message) # Forward the message to the right. 
             except AssertionError:
+                globals.LOG(f"Message type: {message_type}")
+                # handle a server-message
                 globals.LOG(payload_message)
-            forward_location, forward_message = message.get_forward_to(), pickle.dumps(payload_message)
+            if message_type == MessageType.SERVER:
+                forward_location, forward_message = message.get_forward_to(), payload_message
+            else:     
+                forward_location, forward_message = message.get_forward_to(), pickle.dumps(payload_message)
             self.send_message(forward_location, forward_message)
           
 
@@ -99,8 +106,7 @@ class Node:
         """Handle connections coming to my right port"""
         globals.LOG("Handling right")
         right_data=self.get_data(right_socket, address) # get the data from right
-        self.send_message_with_encryption(self.return_location, right_data) # send the message to the left
-        
+        self.send_message_with_encryption(self.return_location, right_data) # send the message to the left        
 
         
     def do_primary_diffie_hellman(self, DH_message, return_location):

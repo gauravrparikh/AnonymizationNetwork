@@ -1,3 +1,5 @@
+from enum import Enum
+
 class Message:
     """
     Class to construct messages to pass over sockets. 
@@ -6,9 +8,9 @@ class Message:
     
     def __init__(self, payload, forward_to,type):
         """Payload can be a list or a Message"""
-        self.payload = payload
-        self.forward_to = forward_to
-        self.type = type
+        self.payload: str = payload
+        self.forward_to: tuple = forward_to
+        self.type: Message.MessageType = type
         
     def get_payload(self):
         return self.payload
@@ -18,5 +20,9 @@ class Message:
     
     def get_type(self):
         return self.type
-    
-    
+
+class MessageType(Enum):
+    SETUP = "setup_message"
+    RETURN = "return_message"
+    FORWARD = "forward_message"
+    SERVER = "server_message"

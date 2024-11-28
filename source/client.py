@@ -9,7 +9,7 @@ import pickle
 import globals
 import queue
 import base64
-from message import Message
+from message import Message, MessageType
 
 class Client:
     def __init__(self, browser_port=globals.BROWSER_PORT, client_right_port=globals.CLIENT_RIGHT_PORT, client_addr="127.0.0.1", ds_addr=globals.DS_ADDR, ds_port=globals.DS_CLIENT_PORT):
@@ -103,20 +103,20 @@ class Client:
 
     def relay_messages_bidirectionally(self, browser_socket:socket.socket, directory_socket:socket.socket,entry_node, entry_symmetric_key, middle_node, middle_symmetric_key, exit_node, exit_symmetric_key):
         #browser -> anon network (entry node)
-        globals.LOG("Relaying messages bidirectionally")
+        globals.LOG("############## Relaying messages bidirectionally ##############")
         browser_to_anon_thread = threading.Thread(target=self.relay_messages_from_browser, 
                                                   args=(browser_socket, entry_node, entry_symmetric_key, middle_node, middle_symmetric_key, exit_node, exit_symmetric_key))
         #anon network (entry node) -> browser
-        globals.LOG("Relaying messages bidirectionally")
-        anon_to_browser_thread = threading.Thread(target=self.relay_messages_to_browser, args=(browser_socket,entry_symmetric_key, middle_symmetric_key, exit_symmetric_key))
+        #globals.LOG("Relaying messages bidirectionally")
+        #anon_to_browser_thread = threading.Thread(target=self.relay_messages_to_browser, args=(browser_socket,entry_symmetric_key, middle_symmetric_key, exit_symmetric_key))
         #start the threads
         globals.LOG("Starting threads")
         browser_to_anon_thread.start()
-        anon_to_browser_thread.start()
+        #anon_to_browser_thread.start()
         #wait for the threads to finish (to clean up sockets)
         globals.LOG("Waiting for threads to finish")
         browser_to_anon_thread.join()
-        anon_to_browser_thread.join()
+        #anon_to_browser_thread.join()
         #close the sockets
         browser_socket.close()
         directory_socket.close()
@@ -147,61 +147,39 @@ class Client:
     def relay_messages_from_browser(self, browser_socket, entry, entry_symmetric_key, middle, middle_symmetric_key, exit, exit_symmetric_key):
         #returns when the source finishes sending data (empty byte string)
         globals.LOG("Relaying messages from browser")
-        entry_node_address = (entry[0], entry[1])   
+        entry_node_address = (entry[0], entry[1])
+        data = b''
         while True:
-            data = browser_socket.recv(1024)
-            globals.LOG(f"Data received from browser{ data[:10]}")
-            if not data:
-                break            
+            packet = browser_socket.recv(1024)
+            if not packet:
+                break
+            data += packet
+            globals.LOG(f"Data received from browser{ packet[:10]}")
             # Encrypt message with symmetric keys
             message = self.layer_onion(entry_symmetric_key, middle, middle_symmetric_key, exit, exit_symmetric_key, data,(globals.DESTINATION_ADDR, globals.DESTINATION_PORT) )
             # Send message to destination
             self.send_message(pickle.dumps(message), entry_node_address)
 
-        browser_socket.shutdown(socket.SHUT_WR)
-        
-
-    def relay_messages_to_browser(self, browser_socket:socket.socket,entry_symmetric_key, middle_symmetric_key, exit_symmetric_key):
-         #Get response from destination
-        response = self.get_response_from_destination_server() # the destination server is the "source" here    
-        globals.LOG("Response from destination server", response[:10])
-        # Decrypt message with symmetric keys
-        self.unlayer_onion(response, entry_symmetric_key, middle_symmetric_key, exit_symmetric_key)
-        globals.LOG("Unlayered response from destination server", response[:10])
-        # Send response to browser
-        browser_socket.sendall(response)
-
-
-    def get_response_from_destination_server(self):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listen_socket:
-            listen_socket.bind((self.my_address, self.client_right_port))
-            listen_socket.listen()
-            while True:
-                right_socket, address = listen_socket.accept()
-                # Create a new thread for each entry node connection where entry node is transmitting data from the destination server
-                right_thread = threading.Thread(
-                    target=self.handle_response_from_destination, args=(right_socket, address)
-                )
-                right_thread.start()
-                right_thread.join()
-
-
-    def handle_response_from_destination(self, right_socket, address):
-        """Handle incoming connections"""
-        try:
-            data = b''
-            while True:
-                curr = right_socket.recv(4096)
-                data += curr
-                if not curr:
-                    globals.LOG(f"Connection with {address} closed.")
-                    break
-            globals.LOG("Message Received", pickle.loads(data))    
-            return pickle.loads(data)  
-        except socket.error as e:
-           globals.LOG(f"Socket error with {address}: {e}")
-        finally:
-            right_socket.close()        
+    # def relay_messages_to_browser(self, browser_socket:socket.socket,entry_symmetric_key, middle_symmetric_key, exit_symmetric_key):
+    #      #Get response from destination
+         
+    #     client_entry_node_socket, client_entry_address = self.listen_to_node(self.client_right_port)
+    #     response =  pickle.loads(self.get_data(client_entry_node_socket, client_entry_address)).get_payload()
+    #     try:
+    #         assert isinstance(response, Message)
+    #     except AssertionError:
+    #         globals.LOG("Response is not a Message object")
+    #         globals.LOG(f"Response {response}") 
+         
+    # def relay_messages_to_browser(self, browser_socket:socket.socket,entry_symmetric_key, middle_symmetric_key, exit_symmetric_key):
+    #      #Get response from destination
+    #     response = self.get_response_from_destination_server() # the destination server is the "source" here    
+    #     globals.LOG("Response from destination server", response[:10])
+    #     # Decrypt message with symmetric keys
+    #     self.unlayer_onion(response, entry_symmetric_key, middle_symmetric_key, exit_symmetric_key)
+    #     globals.LOG(f"Unlayered response from destination server{ response[:10]}")
+    #     # Send response to browser
+    #     browser_socket.sendall(response)
 
 
     def exchange_DH_entry_node(self, entry_node):
@@ -220,7 +198,7 @@ class Client:
 
         # Send parameters and public key; pickle every element in message, then pickle the entire list itself
         DH_setup_payload=[public_key_A.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo), parameters.parameter_bytes(Encoding.DER, ParameterFormat.PKCS3)] # [key, param]
-        message = pickle.dumps(Message(DH_setup_payload, client_return_address, "setup_message"))
+        message = pickle.dumps(Message(DH_setup_payload, client_return_address, MessageType.SETUP))
         self.send_message(message, entry_left_address) #TODO: encrypt with TLS
         globals.LOG("Sent message from client's right to entry node's left")
 
@@ -265,10 +243,10 @@ class Client:
         
         # Construct message for entry node to send to middle node. This message will be sent unencrypted along the entry to middle channel [key, param]
         DH_setup_payload=[public_key_C.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo), parameters.parameter_bytes(Encoding.DER, ParameterFormat.PKCS3)]
-        diffie_hellman_message = Message(DH_setup_payload,entry_right_address, "setup_message")
+        diffie_hellman_message = Message(DH_setup_payload,entry_right_address, MessageType.SETUP)
         
         # Construct message for client to send to entry node to forward the diffie hellman message to the middle node.
-        message = Message(diffie_hellman_message,middle_left_address,"forward_message")
+        message = Message(diffie_hellman_message,middle_left_address,MessageType.FORWARD)
         
         cipher = Fernet(base64.urlsafe_b64encode(entry_symmetric_key))
         encrypted_message = cipher.encrypt(pickle.dumps(message))
@@ -326,15 +304,15 @@ class Client:
         
         # Construct message for middle node to send to exit node. This message will be sent unencrypted along the middle to exit channel [key, param]
         DH_setup_payload = [public_key_E.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo), parameters.parameter_bytes(Encoding.DER, ParameterFormat.PKCS3)]
-        diffie_hellman_message = Message(DH_setup_payload, middle_right_address, "setup_message")
+        diffie_hellman_message = Message(DH_setup_payload, middle_right_address, MessageType.SETUP)
         
         # Construct message for entry node to send to middle node (for the middle node to forward to the exit node)
-        message = Message(diffie_hellman_message,exit_left_address,"forward_message")
+        message = Message(diffie_hellman_message,exit_left_address,MessageType.FORWARD)
         
         encrypted_message_for_middle = middle_cipher.encrypt(pickle.dumps(message))
         
         # Construct message for client to send to entry node. 
-        message = Message(encrypted_message_for_middle,middle_left_address,"forward_message")
+        message = Message(encrypted_message_for_middle,middle_left_address,MessageType.FORWARD)
        
         encrypted_message = entry_cipher.encrypt(pickle.dumps(message))
 
@@ -431,19 +409,20 @@ class Client:
         middle_left_addr = (middle[0], middle[1])
                 
         # encrypted_message with cipher 3 for the middle to exit channel 
-        message_exit_understands = cipher3.encrypt(pickle.dumps(Message(message, destination_server, "forward_message")))
-        message_middle_understands = cipher2.encrypt(pickle.dumps(Message(message_exit_understands, exit_left_addr, "forward_message")))  
-        message_entry_understands = cipher1.encrypt(pickle.dumps(Message(message_middle_understands, middle_left_addr, "forward_message"))) 
+        message_exit_understands = cipher3.encrypt(pickle.dumps(Message(message, destination_server, MessageType.SERVER)))
+        message_middle_understands = cipher2.encrypt(pickle.dumps(Message(message_exit_understands, exit_left_addr, MessageType.FORWARD)))  
+        message_entry_understands = cipher1.encrypt(pickle.dumps(Message(message_middle_understands, middle_left_addr, MessageType.FORWARD))) 
         ## send this to entry node. 
-        return pickle.dumps(message_entry_understands)
+        return message_entry_understands
         
     
     def unlayer_onion(self, message, entry_symmetric_key, middle_symmetric_key, exit_symmetric_key):
+        # Constructing ciphers
         cipher1 = Fernet(base64.urlsafe_b64encode(entry_symmetric_key))
         cipher2 = Fernet(base64.urlsafe_b64encode(middle_symmetric_key))
         cipher3 = Fernet(base64.urlsafe_b64encode(exit_symmetric_key))
 
-        decrypt_entry_layer = [cipher1.decrypt(x) for x in message]
+        decrypt_entry_layer = cipher1.decrypt(pickle.loads(message))
         decrypt_middle_layer = [cipher2.decrypt(x) for x in decrypt_entry_layer[0]]
         decrypt_exit_layer = [cipher3.decrypt(x) for x in decrypt_middle_layer[0]]
 
