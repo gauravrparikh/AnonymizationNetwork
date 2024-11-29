@@ -86,7 +86,7 @@ class Node:
             message = pickle.loads(self.cipher.decrypt(message))
             payload_message=message.get_payload()
             message_type = message.get_type()
-            globals.LOG(f"Message type: {message_type}")            
+            globals.LOG(f"Message type: {message_type}")         
             try:
                 assert isinstance(payload_message, Message) # Forward the message to the right. 
             except AssertionError:
@@ -95,7 +95,7 @@ class Node:
                 globals.LOG(payload_message)
             if message_type == MessageType.SERVER:
                 forward_location, forward_message = message.get_forward_to(), payload_message
-                globals.LOG(f"############## Relaying message to web server ##############,{forward_message}")
+                globals.LOG(f">>>>>>>>>>>>>> Received at exit node <<<<<<<<<<<<<<<,{forward_message}")
             else:     
                 forward_location, forward_message = message.get_forward_to(), pickle.dumps(payload_message)
             self.send_message(forward_location, forward_message)
@@ -148,7 +148,7 @@ class Node:
     def send_message(self, destination_location, message):
         """Connect to the neighbor specified by destination and send a message."""
         # globals.LOG(f"Encrypted message: {message}")
-        globals.LOG(f'Sending encrypted message to {destination_location}')
+        globals.LOG(f'Sending message to {destination_location}')
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as neighbor_socket:
                 neighbor_socket.connect(destination_location)
